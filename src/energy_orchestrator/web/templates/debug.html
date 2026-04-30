@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% block title %}Debug &mdash; Energy Orchestrator{% endblock %}
+{% block content %}
+
+<section>
+    <h2>Source health</h2>
+    <table>
+        <thead>
+            <tr><th>Source</th><th>Status</th><th>Last success</th><th>Last error</th><th>Error message</th></tr>
+        </thead>
+        <tbody>
+        {% for h in health_rows %}
+            <tr>
+                <td>{{ h.source_name }}</td>
+                <td><span class="badge badge-{{ h.status | lower }}">{{ h.status }}</span></td>
+                <td>{% if h.row and h.row.last_success_at %}{{ h.row.last_success_at.strftime("%Y-%m-%d %H:%M:%S") }}{% else %}&mdash;{% endif %}</td>
+                <td>{% if h.row and h.row.last_error_at %}{{ h.row.last_error_at.strftime("%Y-%m-%d %H:%M:%S") }}{% else %}&mdash;{% endif %}</td>
+                <td class="reason">{% if h.row and h.row.last_error_message %}{{ h.row.last_error_message }}{% else %}&mdash;{% endif %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</section>
+
+<section>
+    <h2>Manual override</h2>
+    <p>
+        Currently:
+        <strong>{{ override.mode | upper }}</strong>
+        {% if override.expires_at %}
+            (until {{ override.expires_at.strftime("%Y-%m-%d %H:%M:%S") }})
+        {% endif %}
+    </p>
+    <form id="override-form">
+        <label>Mode:
+            <select name="mode">
+                {% for m in override_modes %}
+                    <option value="{{ m }}">{{ m }}</option>
+                {% endfor %}
+            </select>
+        </label>
+        <label>Minutes (optional):
+            <input type="number" name="minutes" min="1" max="1440" placeholder="indefinite">
+        </label>
+        <button type="submit">Apply</button>
+    </form>
+    <p class="hint">POSTs to <code>/api/override</code>; ``mode=auto`` clears any existing override.</p>
+</section>
+
+<section>
+    <h2>Recent decisions (last 24 h)</h2>
+    {% if recent_decisions %}
+    <table>
+        <thead>
+            <tr><th>When</th><th>State</th><th>Rule</th><th>Reason</th><th>Override</th><th>Forecast end-SoC</th></tr>
+        </thead>
+        <tbody>
+        {% for d in recent_decisions | reverse %}
+            <tr>
+                <td>{{ d.timestamp.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+                <td><span class="badge badge-{{ d.state }}">{{ d.state }}</span></td>
+                <td>{{ d.rule_fired }}</td>
+                <td class="reason">{{ d.reason }}</td>
+                <td>{% if d.manual_override %}{{ d.override_mode }}{% else %}&mdash;{% endif %}</td>
+                <td>{% if d.forecast_end_soc_pct is not none %}{{ "%.1f" | format(d.forecast_end_soc_pct) }}%{% else %}&mdash;{% endif %}</td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p class="empty">No decisions logged yet.</p>
+    {% endif %}
+</section>
+
+<section>
+    <h2>Active config</h2>
+    <pre><code>{{ config_view | tojson(indent=2) }}</code></pre>
+</section>
+
+<script>
+document.getElementById('override-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const data = new FormData(e.target);
+    const body = { mode: data.get('mode') };
+    const minutes = data.get('minutes');
+    if (minutes && body.mode !== 'auto') body.minutes = parseInt(minutes, 10);
+    const resp = await fetch('/api/override', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    if (resp.ok) {
+        location.reload();
+    } else {
+        const err = await resp.json();
+        alert('Error: ' + (err.detail || resp.statusText));
+    }
+});
+</script>
+
+{% endblock %}

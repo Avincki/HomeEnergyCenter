@@ -1,0 +1,54 @@
+# Energy Orchestrator — example configuration.
+# Copy to config.yaml and edit. config.yaml is gitignored.
+
+poll_interval_s: 30
+
+sonnen:
+  host: 192.168.1.50
+  port: 80
+  api_version: v2
+  auth_token: REPLACE_WITH_LOCAL_TOKEN
+  capacity_kwh: 10.0
+
+homewizard:
+  car_charger:
+    host: 192.168.1.51
+    charging_threshold_w: 500
+  p1_meter:
+    host: 192.168.1.52
+  small_solar:
+    host: 192.168.1.53
+    peak_w: 2000
+
+solaredge:
+  host: 192.168.1.60
+  modbus_port: 1502
+  unit_id: 1
+
+prices:
+  provider: entsoe       # entsoe | tibber | csv
+  api_key: REPLACE_ME    # required for entsoe / tibber
+  area: BE
+  injection_factor: 1.0
+  injection_offset: 0.0
+  # csv_path: data/prices.csv  # only when provider: csv
+
+decision:
+  battery_low_soc_pct: 60
+  battery_full_soc_pct: 80
+  hysteresis_pct: 5
+  forecast_horizon_h: 12
+  dry_run: true          # actuator writes are suppressed while true
+
+storage:
+  sqlite_path: data/orchestrator.db
+  history_retention_days: 90
+
+logging:
+  log_dir: logs
+  level: INFO
+  retention_days: 30
+
+web:
+  host: 0.0.0.0
+  port: 8000

@@ -1,0 +1,190 @@
+================================================================================
+ENERGY ORCHESTRATOR — PROJECT SPECIFICATION
+================================================================================
+
+PURPOSE
+-------
+A self-hosted Python service running on the home network that minimizes
+electricity cost on a Belgian dynamic-tariff contract by:
+  * reading the state of all relevant home energy assets,
+  * deciding minute-by-minute whether the SolarEdge inverter should produce
+    or be curtailed,
+  * acting on that decision automatically via Modbus TCP,
+  * presenting a live dashboard and a debug board for inspection and
+    manual override.
+
+
+HARDWARE / DATA SOURCES
+-----------------------
+
+1. sonnenBatterie (home battery)
+   - Read via the local HTTP API.
+   - v2 API: GET http://<ip>:80/api/v2/status, header Auth-Token: <token>
+   - v1 API: GET http://<ip>:8080/api/v1/status (no auth, older firmware)
+   - Used fields: USOC (state of charge %), Pac_total_W (battery power,
+     positive = discharging, negative = charging), Production_W,
+     Consumption_W, GridFeedIn_W.
+
+2. HomeWizard kWh meter on car charging station
+   - Local API: GET http://<ip>/api/v1/data
+   - Used to detect whether the EV is currently charging
+     (active_power_w above a configurable threshold).
+
+3. HomeWizard P1 dongle on the digital meter ("slimme meter")
+   - Same local API shape: GET http://<ip>/api/v1/data
+   - Used field: active_power_w (positive = importing from grid,
+     negative = exporting). Currently informational; may be used in
+     future rule extensions.
+
+4. HomeWizard kWh meter on the small (non-SolarEdge) PV string
+   - Same local API shape.
+   - Used as a proxy for current irradiance / weather, to forecast what
+     the SolarEdge installation would produce when off, and to simulate
+     battery SoC evolution under "SolarEdge OFF" scenarios.
+
+5. SolarEdge inverter
+   - Read AND controlled via Modbus TCP, port 1502 (or 502), unit ID 1.
+   - Active Power Limit, register 0xF001 (61441):
+     * Write 0   -> curtail completely (OFF).
+     * Write 100 -> release to full power (ON).
+   - Prerequisites on the inverter (one-time installer setup):
+     * Modbus TCP enabled (SetApp -> Site Communication).
+     * Advanced Power Control enabled AND committed.
+
+6. Day-ahead electricity prices
+   - Source: ENTSO-E Transparency Platform (BE bidding zone),
+     or supplier API (e.g., Tibber), or a static CSV for development.
+   - Both consumption and injection prices are tracked per hour.
+   - Injection price may be negative; this is the trigger for
+     curtailment decisions.
+
+
+DECISION LOGIC (RULE ENGINE)
+----------------------------
+Evaluated every poll_interval_s seconds, in priority order. The first
+rule whose condition holds determines the decision.
+
+  RULE 1: SolarEdge ON  if  battery SoC < battery_low_soc_pct (default 60%)
+          - Below this threshold the battery is the priority load; we
+            run SolarEdge to charge it regardless of price.
+
+  RULE 2: SolarEdge ON  if  car is currently charging
+          - High instantaneous demand; covering it from PV is always
+            preferable to grid import.
+
+  RULE 3: SolarEdge ON  if  current injection price > 0
+          - Any positive export rate makes production profitable.
+
+  RULE 4: Otherwise — forecast the battery SoC over the upcoming
+          contiguous negative-injection-price window, assuming
+          SolarEdge stays OFF and only the small (non-SE) string
+          contributes to charging.
+            - Forecast end-SoC < battery_full_soc_pct (default 80%)
+                -> SolarEdge ON
+                   Rationale: there is headroom in the battery; produce
+                   locally and store, rather than exporting at a loss.
+            - Forecast end-SoC >= battery_full_soc_pct
+                -> SolarEdge OFF
+                   Rationale: the battery would saturate from the small
+                   string alone; any SolarEdge output would have to be
+                   exported at a negative price.
+
+  Hysteresis: a configurable margin (default 5%) is applied around the
+  60% threshold to avoid rapid flapping.
+
+  Manual override: from the debug board, the user can force ON / OFF
+  for a configurable duration, or set AUTO to hand control back to
+  the rule engine. The auto-decision is still computed and logged
+  every tick when an override is active.
+
+
+PERSISTENCE
+-----------
+SQLite (single file, SQLAlchemy 2.0 async) with three tables:
+  * readings       — every poll's raw measurements
+  * decisions      — every rule outcome (state, rule fired, reason,
+                     state-changed flag, manual-override flag)
+  * source_status  — last success / last error per data source
+                     (the basis for the debug-board health panel)
+History is pruned daily based on storage.history_retention_days.
+
+
+LOGGING
+-------
+  * Daily-rotating log files in the configured log_dir.
+  * One file per day, naming pattern: orchestrator.log.YYYY-MM-DD
+  * Retention: configurable (default 30 days).
+  * Levels: DEBUG / INFO / WARNING / ERROR — set via config.
+  * Console mirror so the log is also visible when running interactively.
+
+
+WEB INTERFACE
+-------------
+Dashboard ( / ):
+  * Battery state-of-charge ring with battery power direction.
+  * Current decision card (ON/OFF, rule fired, reason).
+  * 24-hour SoC + injection price chart with ON/OFF zone shading.
+  * 24-hour day-ahead injection price bar chart (today + tomorrow
+    if available), current hour highlighted, negative-price hours
+    coloured distinctly.
+  * Six live tiles: house consumption, car charger, small solar,
+    grid import/export, current injection price, override status.
+
+Debug board ( /debug ):
+  * System health panel — for every external dependency:
+      - Is the credential / token / API key configured?
+      - Is the host reachable on the expected port?
+      - When was the last successful read? Last error?
+      - The last error message verbatim, when applicable.
+    Each source gets a status: OK / DEGRADED / ERROR / NOT CONFIGURED.
+  * Manual override controls (Force ON / Force OFF / Auto, with
+    optional minutes timer).
+  * Decision log: most recent rule outcomes.
+  * Raw payloads: the last successful response from each source,
+    pretty-printed JSON.
+  * Active config view (read-only).
+
+
+JSON API ENDPOINTS
+------------------
+  GET  /api/state               current live snapshot
+  GET  /api/history?h=24        readings + decisions, last N hours
+  GET  /api/sources             last success/error per source
+  GET  /api/health              configuration + connectivity status
+  GET  /api/prices              upcoming day-ahead prices (next 24-48h)
+  POST /api/override            { mode, minutes? } — apply override
+
+
+NON-FUNCTIONAL REQUIREMENTS
+---------------------------
+  * Single-machine deployment (Raspberry Pi or any always-on PC).
+  * Failure of any one source must not crash the loop; the affected
+    source is logged and the next tick is attempted.
+  * If essential readings (sonnen, HomeWizard meters) are missing
+    in a tick, the tick is skipped — no decision is taken from
+    incomplete data.
+  * If the actuator write to SolarEdge fails, the live decision_state
+    is NOT updated, so the controller will retry on the next tick.
+  * Dry-run mode (config flag) suppresses all actuator writes; useful
+    for the first weeks of running, and during development.
+
+
+CONFIGURATION (config.yaml, abbreviated)
+-----------------------------------------
+  poll_interval_s        seconds between ticks (default 30)
+  sonnen.host/port/api_version/token/capacity_kwh
+  homewizard.{car_charger,p1_meter,small_solar}.host
+  homewizard.car_charger.charging_threshold_w
+  homewizard.small_solar.peak_w
+  solaredge.host/modbus_port/unit_id
+  prices.provider/api_key/area/injection_factor/injection_offset
+  decision.battery_low_soc_pct/battery_full_soc_pct/hysteresis_pct
+  decision.forecast_horizon_h
+  decision.dry_run
+  storage.sqlite_path/history_retention_days
+  logging.log_dir/level/retention_days
+  web.host/port
+
+================================================================================
+END OF SPECIFICATION
+================================================================================

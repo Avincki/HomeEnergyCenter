@@ -1,0 +1,23 @@
+poll_interval_s: 30
+
+sonnen:
+  host: 192.168.1.50
+  api_version: v2
+  auth_token: test-token
+  capacity_kwh: 10.0
+
+homewizard:
+  car_charger:
+    host: 192.168.1.51
+  p1_meter:
+    host: 192.168.1.52
+  small_solar:
+    host: 192.168.1.53
+    peak_w: 2000
+
+solaredge:
+  host: 192.168.1.60
+
+prices:
+  provider: entsoe
+  api_key: dummy-key

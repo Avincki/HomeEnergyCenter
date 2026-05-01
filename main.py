@@ -18,6 +18,7 @@ from pathlib import Path
 import uvicorn
 
 from energy_orchestrator.config import ConfigError, load_config
+from energy_orchestrator.monitoring import configure_logging
 
 
 def main() -> None:
@@ -34,6 +35,10 @@ def main() -> None:
         print(f"config error:\n{e}", file=sys.stderr)
         sys.exit(1)
 
+    # Configure structlog + stdlib logging before uvicorn boots so its own
+    # access logger flows through our handlers (with log_config=None below).
+    configure_logging(config.logging)
+
     # The factory re-loads config from EO_CONFIG when uvicorn calls it; make
     # sure both sides see the same path even if cwd differs.
     os.environ["EO_CONFIG"] = str(config_path.resolve())
@@ -43,7 +48,7 @@ def main() -> None:
         factory=True,
         host=config.web.host,
         port=config.web.port,
-        log_level=config.logging.level.lower(),
+        log_config=None,  # use the root logger we just configured
     )
 
 

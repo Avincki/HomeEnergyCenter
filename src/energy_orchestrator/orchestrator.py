@@ -18,10 +18,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from energy_orchestrator.config.models import AppConfig
@@ -50,7 +50,7 @@ from energy_orchestrator.prices import (
 )
 from energy_orchestrator.web.override import OverrideController
 
-logger = logging.getLogger(__name__)
+logger = structlog.stdlib.get_logger(__name__)
 
 # SolarEdge active-power-limit values.
 _OFF_PCT = 0
@@ -151,56 +151,67 @@ class TickLoop:
         """Run one orchestration cycle. Used by the background loop and tests."""
         when = now or datetime.now(UTC)
 
-        sonnen_r, car_r, p1_r, small_r, _solar_r = await asyncio.gather(
-            self._read_one(self._sonnen),
-            self._read_one(self._car_charger),
-            self._read_one(self._p1_meter),
-            self._read_one(self._small_solar),
-            self._read_one(self._solaredge),
-        )
-
-        await self._refresh_prices_if_stale(when)
-        current_price = get_current_hour_price(self._price_cache.points(), when)
-
-        reading = self._build_reading(when, sonnen_r, car_r, p1_r, small_r, current_price)
-        decision: Decision | None = None
-
-        soc = sonnen_r.data.get("soc_pct") if sonnen_r is not None else None
-        if soc is None:
-            # Skip the decision step — spec says missing essential data must
-            # not reach the engine. We still persist the partial reading so
-            # the debug board reflects what we did manage to read.
-            logger.warning("tick skipped decision: sonnen SoC unavailable")
-        else:
-            previous_state = await self._fetch_previous_state()
-            ctx = TickContext(
-                timestamp=when,
-                battery_soc_pct=float(soc),
-                car_is_charging=self._car_is_charging(car_r),
-                small_solar_w=self._small_solar_w(small_r),
-                prices=self._price_cache.points(),
-                previous_state=previous_state,
-                battery_capacity_kwh=self.config.sonnen.capacity_kwh,
-                override=self._override_controller.get_active(when),
-            )
-            record = self._engine.decide(ctx)
-            decision = Decision(
-                timestamp=record.timestamp,
-                state=record.state.value,
-                rule_fired=record.rule_fired,
-                reason=record.reason,
-                state_changed=record.state_changed,
-                manual_override=record.manual_override,
-                override_mode=(
-                    record.override_mode.value if record.override_mode is not None else None
-                ),
-                forecast_end_soc_pct=record.forecast_end_soc_pct,
+        # Bind tick_at so every log line emitted during this tick (including
+        # nested helpers) carries the same timestamp.
+        with structlog.contextvars.bound_contextvars(tick_at=when.isoformat()):
+            sonnen_r, car_r, p1_r, small_r, _solar_r = await asyncio.gather(
+                self._read_one(self._sonnen),
+                self._read_one(self._car_charger),
+                self._read_one(self._p1_meter),
+                self._read_one(self._small_solar),
+                self._read_one(self._solaredge),
             )
 
-            if not self.config.decision.dry_run and record.state_changed:
-                await self._actuate_solaredge(record.state)
+            await self._refresh_prices_if_stale(when)
+            current_price = get_current_hour_price(self._price_cache.points(), when)
 
-        await self._persist(reading, decision)
+            reading = self._build_reading(when, sonnen_r, car_r, p1_r, small_r, current_price)
+            decision: Decision | None = None
+
+            soc = sonnen_r.data.get("soc_pct") if sonnen_r is not None else None
+            if soc is None:
+                # Skip the decision step — spec says missing essential data must
+                # not reach the engine. We still persist the partial reading so
+                # the debug board reflects what we did manage to read.
+                logger.warning("tick skipped decision: sonnen SoC unavailable")
+            else:
+                previous_state = await self._fetch_previous_state()
+                ctx = TickContext(
+                    timestamp=when,
+                    battery_soc_pct=float(soc),
+                    car_is_charging=self._car_is_charging(car_r),
+                    small_solar_w=self._small_solar_w(small_r),
+                    prices=self._price_cache.points(),
+                    previous_state=previous_state,
+                    battery_capacity_kwh=self.config.sonnen.capacity_kwh,
+                    override=self._override_controller.get_active(when),
+                )
+                record = self._engine.decide(ctx)
+                decision = Decision(
+                    timestamp=record.timestamp,
+                    state=record.state.value,
+                    rule_fired=record.rule_fired,
+                    reason=record.reason,
+                    state_changed=record.state_changed,
+                    manual_override=record.manual_override,
+                    override_mode=(
+                        record.override_mode.value if record.override_mode is not None else None
+                    ),
+                    forecast_end_soc_pct=record.forecast_end_soc_pct,
+                )
+
+                if record.state_changed:
+                    logger.info(
+                        "decision state changed",
+                        state=record.state.value,
+                        rule=record.rule_fired,
+                        manual_override=record.manual_override,
+                    )
+
+                if not self.config.decision.dry_run and record.state_changed:
+                    await self._actuate_solaredge(record.state)
+
+            await self._persist(reading, decision)
 
     # ----- helpers ------------------------------------------------------------
 
@@ -211,7 +222,7 @@ class TickLoop:
             await self._record_status_error(client.source_name, str(e))
             return None
         except Exception as e:  # defensive: don't kill the tick
-            logger.exception("unexpected error reading %s", client.source_name)
+            logger.exception("device read unexpected error", source=client.source_name.value)
             await self._record_status_error(client.source_name, f"unexpected: {e}")
             return None
 
@@ -276,7 +287,7 @@ class TickLoop:
                 await uow.source_status.record_success(source.value, payload=payload)
                 await uow.commit()
         except Exception:  # never let bookkeeping kill the tick
-            logger.exception("failed to record success for %s", source.value)
+            logger.exception("source-status success bookkeeping failed", source=source.value)
 
     async def _record_status_error(self, source: SourceName, message: str) -> None:
         try:
@@ -284,7 +295,7 @@ class TickLoop:
                 await uow.source_status.record_error(source.value, message=message)
                 await uow.commit()
         except Exception:  # never let bookkeeping kill the tick
-            logger.exception("failed to record error for %s", source.value)
+            logger.exception("source-status error bookkeeping failed", source=source.value)
 
     # ----- pure functions -----------------------------------------------------
 

@@ -72,7 +72,7 @@ Build modern tabbed configuration interface using tkinter with ttk styling. Impl
 
 ## 12. Implement Structured Logging and Monitoring System
 
-- [ ] **Estimated time:** 1d
+- [x] **Estimated time:** 1d (delivered as MVP — log viewer / metrics / alerting deferred)
 
 Set up structlog with comprehensive logging categories and levels. Create real-time log viewer with filtering, search, and export capabilities. Implement metrics collection for KPIs including response times, success rates, and system resources. Add dashboard integration with alerting and automated reporting.
 

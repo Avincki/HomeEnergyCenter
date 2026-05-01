@@ -22,6 +22,7 @@ from energy_orchestrator.data import (
     create_session_factory,
     init_schema,
 )
+from energy_orchestrator.monitoring import configure_logging
 from energy_orchestrator.orchestrator import TickLoop
 from energy_orchestrator.prices import PriceCache
 from energy_orchestrator.web.api import router as api_router
@@ -36,6 +37,9 @@ _TEMPLATES_DIR = _THIS_DIR / "templates"
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     config: AppConfig = app.state.config
+    # Idempotent — main.py also calls this before uvicorn.run, but direct
+    # create_app() callers (tests, gui-launched servers) need it too.
+    configure_logging(config.logging)
     db_engine = create_engine(config.storage.sqlite_path)
     await init_schema(db_engine)
     session_factory = create_session_factory(db_engine)

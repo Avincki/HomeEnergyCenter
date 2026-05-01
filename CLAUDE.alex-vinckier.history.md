@@ -411,3 +411,97 @@ Phase 12 (structlog) is now the smallest remaining item (1d) and the
 most leverage per day for ops visibility. Phase 13 (test coverage push)
 and Phase 14 (mkdocs) round out the workplan. The 4 phases left are
 all relatively self-contained — no further dependencies between them.
+
+## 2026-05-01 (yet later) — Phase 12: structlog wired in
+
+Phase 12 done as a tight MVP. **247 tests pass** (240 -> 247, +7 logging
+tests); all four gates green across 67 source files. Real uvicorn boot
+verified — its own access + error logs land as JSON in
+`logs/energy_orchestrator.log`.
+
+### What shipped
+
+- `src/energy_orchestrator/monitoring/logging_config.py` — single
+  `configure_logging(config)` entry point. Does three things:
+  1. Configures `structlog` to feed events into stdlib via
+     `structlog.stdlib.LoggerFactory` (so `structlog.get_logger` and
+     `logging.getLogger` produce coherent output).
+  2. Installs a rotating JSON file handler under
+     `config.logging.log_dir/energy_orchestrator.log` (10 MiB rotation,
+     retention_days backups) plus a console handler on stderr using the
+     `ConsoleRenderer`.
+  3. Tags its handlers with a private attribute and removes only those
+     on re-config — pytest's caplog and any other foreign handlers
+     survive.
+- `main.py` calls `configure_logging` BEFORE `uvicorn.run`, then passes
+  `log_config=None` so uvicorn hooks into our root logger instead of
+  installing its own.
+- `web/app.py` lifespan calls it idempotently — covers direct factory
+  paths used by tests and a future gui-launched server.
+- `orchestrator.py` switched from `logging.getLogger` to
+  `structlog.stdlib.get_logger`. Old `%s`-style format args replaced
+  with kwargs (`logger.exception("device read unexpected error",
+  source=client.source_name.value)`). `tick()` wraps its body in
+  `structlog.contextvars.bound_contextvars(tick_at=…)` so every nested
+  log line in the same tick carries the tick timestamp. Added an
+  `info("decision state changed", ...)` event for state flips.
+- `gui/app.py` had an unused `logger`; deleted along with the import.
+- 7 new tests (`test_monitoring_logging.py`): file creation, ISO
+  timestamp + level shape, contextvar binding, stdlib pass-through,
+  idempotency, foreign-handler safety, level threshold filtering.
+
+### Deferred from spec
+
+- **Real-time log viewer UI** — separate skill. Would need an SSE/WS
+  endpoint that tails the JSON file, plus a client page with filters.
+- **Prometheus metrics integration** — different concern from logging;
+  belongs in its own phase if/when ops tooling demands it.
+- **Alert escalation, email/webhook notifications** — integration glue.
+- **Per-component log levels** — single global level + structured
+  fields lets you grep instead. Add per-component override only when
+  there's a concrete need.
+
+### Notable design choices
+
+- **structlog feeds stdlib, not the other way around.** `LoggerFactory`
+  + `ProcessorFormatter` is the structlog-recommended pattern when you
+  also want third-party stdlib loggers (uvicorn, sqlalchemy) to format
+  consistently. Verified: uvicorn access logs come out as JSON.
+- **Idempotent reconfigure via handler tagging.** `setattr(handler,
+  "_energy_orchestrator_handler", True)` lets the function strip *only*
+  its own handlers on reinstall, not ones added by pytest's `caplog`
+  fixture or other consumers.
+- **Console renderer with `colors=False`** — ANSI sequences look ugly
+  in PowerShell on Windows and journald, and the file handler is the
+  primary read-path anyway.
+- **bound_contextvars over .bind() returning a logger.** Using the
+  context-manager form means helpers called from `tick()` automatically
+  inherit the binding without having to thread a logger object down.
+
+### Stray-byte glitch round 3 (Dropbox)
+
+System reminder flagged a corruption at the top of `src/energy_orches
+trator/web/views.py`: a `("yes" "")` snippet had appeared before the
+docstring, which would have broken every test on collection. By the
+time I ran `git diff` after fixing it, the file matched HEAD again —
+either the Edit + clean state collapsed back to no-diff, or the
+notification reflected a transient state. Either way: this is the
+third time something has corrupted bytes near the top of `views.py`
+(2026-05-01 chart merge, code review, today). Worth investigating
+whether Dropbox's text-merge ever runs on .py files, and considering
+moving the project off Dropbox.
+
+### State at end-of-session
+
+- All logs (orchestrator, FastAPI, uvicorn, sqlalchemy) flow through
+  the same JSON pipeline.
+- File at `logs/energy_orchestrator.log`; rotates at 10 MiB.
+- All four quality gates clean.
+
+### Next session
+
+Phase 13 (comprehensive test suite, 1.5d) and Phase 14 (mkdocs, 0.5d)
+remain. Phase 13 has the highest payoff if the user expects to extend
+this in production — push coverage to >90%, add hypothesis property
+tests for the rule engine, contract tests for the device clients.
+Phase 14 is small but valuable for handoff.

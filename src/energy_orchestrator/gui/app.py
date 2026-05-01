@@ -10,7 +10,6 @@ results back to the tk main thread via ``root.after``.
 
 from __future__ import annotations
 
-import logging
 import tkinter as tk
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass
@@ -35,9 +34,6 @@ from energy_orchestrator.gui.binding import (
     save_with_backup,
 )
 from energy_orchestrator.gui.probe import ProbeResult, probe_device
-
-logger = logging.getLogger(__name__)
-
 
 # ----- field definitions ------------------------------------------------------
 

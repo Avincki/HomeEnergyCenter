@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, TypeVar
 
 import pytest
 from aiohttp import web
@@ -26,6 +26,8 @@ from energy_orchestrator.devices import (
 )
 from energy_orchestrator.devices.base import DeviceClient
 
+HwConfigT = TypeVar("HwConfigT", bound=HomeWizardDeviceConfig)
+
 Handler = Callable[[web.Request], Awaitable[web.StreamResponse]]
 
 
@@ -41,9 +43,7 @@ async def _running_server(handler: Handler) -> AsyncIterator[TestServer]:
         await server.close()
 
 
-def _make_config(
-    config_cls: type[HomeWizardDeviceConfig], port: int, *, retry_count: int = 1
-) -> HomeWizardDeviceConfig:
+def _make_config(config_cls: type[HwConfigT], port: int, *, retry_count: int = 1) -> HwConfigT:
     kwargs: dict[str, Any] = {
         "host": "127.0.0.1",
         "port": port,

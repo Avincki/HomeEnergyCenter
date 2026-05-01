@@ -142,3 +142,189 @@ decision engine, persists `Reading` + `Decision` + `SourceStatus`, and
 (when `decision.dry_run = false`) calls `solaredge.set_active_power_limit()`.
 Once that lands, Phase 15 (price chart) becomes feasible because the
 `/api/prices` endpoint will have something to return.
+
+## 2026-05-01 — Tick loop + Phase 15 dashboard charts
+
+Implemented the orchestrator tick loop and Phase 15 (dashboard charts) in
+one go. 232 tests pass; ruff/ruff-format/black clean. Dashboard renders end
+to end on a real uvicorn instance (curl 200 on `/`, `/static/dashboard.js`,
+`/static/vendor/chart.umd.min.js`, `/api/prices`).
+
+### What landed
+
+- **`prices/cache.py`** — `PriceCache`, single-writer in-memory store of
+  `PricePoint`s. `is_stale(now)` triggers refresh after one hour OR when
+  the cache no longer covers `now` (handles overnight pauses cleanly).
+- **`orchestrator.py`** — `TickLoop`. Builds all five clients via the
+  existing registry, holds the `PriceProvider`, owns one `DecisionEngine`.
+  `start()` schedules a background task; `stop()` cancels it and closes
+  every resource. One `tick()` method does the real work and is also the
+  unit-test entry point (it accepts `now=` for determinism). Per-device
+  reads run in parallel via `asyncio.gather`. Per-source success/error is
+  recorded against `SourceStatus`. The decision step is **skipped** if
+  sonnen SoC isn't available — partial reading still persists. SolarEdge
+  is actuated only when `decision.dry_run=False` AND `state_changed=True`.
+- **Lifespan wiring** — `create_app(start_tick_loop=True)`. Tests pass
+  `start_tick_loop=False` so the test fixture doesn't hammer non-existent
+  device IPs every time the integration suite spins up the app.
+- **`/api/prices`** now serves `{last_refresh, window_start, window_end,
+  prices: [...]}` from the cache (today midnight UTC + 2 days). The old
+  hard-coded "tick loop not running" note is gone.
+- **Phase 15** — vendored `Chart.js v4.4.6` UMD min build (~200 KB) under
+  `web/static/vendor/`, no CDN. Ships an inline minimal date adapter so
+  the time-axis line chart works without `chartjs-adapter-date-fns`. Two
+  charts render from `/api/prices` and `/api/history?h=24`:
+    - day-ahead injection-price bar chart (current hour outlined accent,
+      negative-price hours filled red);
+    - SoC + injection-price overlay line chart (SoC on left axis, dashed
+      amber price line on right) with ON/OFF zone shading drawn by a
+      custom Chart.js plugin that reads decision timestamps.
+- **Tests** — `tests/unit/test_prices_cache.py` (5), `test_orchestrator.py`
+  (7) using fakes that replace `loop._sonnen` etc. after construction;
+  integration tests now check the chart canvases + vendored JS path +
+  cache-populated `/api/prices`.
+
+### Notable decisions
+
+- **`# noqa` for `BLE001` removed.** That code is from `flake8-blind-except`
+  which we don't enable; the bare comments were noise. Replaced with plain
+  `except Exception:` and a one-line comment explaining the intent.
+- **SolarEdge constructor narrowing.** `TickLoop.__init__` does an explicit
+  `isinstance(solaredge, SolarEdgeClient)` check after registry lookup so
+  the field is typed as `SolarEdgeClient` (not `DeviceClient[Any]`) for the
+  one place that calls `set_active_power_limit`. Keeps mypy --strict happy
+  without `# type: ignore` on the actuation call.
+- **Small-solar sign convention is `abs()`.** HomeWizard kWh-meter wiring
+  direction is unknown at design time; magnitude is the production rate.
+  One-line fix if the user later confirms direction.
+- **Price cache window = today 00:00 UTC + 2 days.** Aligns with ENTSO-E's
+  publishing rhythm (today + tomorrow once tomorrow's prices land) and the
+  forecast horizon used by rule 4.
+- **Inline Chart.js date adapter.** `chartjs-adapter-date-fns` would have
+  meant a second vendored file; we only need hour-level formatting, so a
+  20-line adapter inside `dashboard.js` is enough. Smaller surface, no
+  extra static asset.
+
+### Pre-existing mypy warnings — NOT my regression
+
+`mypy --strict src tests` reports **10 errors in 3 files I did not touch**:
+- `test_config_models.py:139,140,141,etc.` — "unused `type: ignore`"
+- `test_devices_homewizard.py:125,137,…` — variant configs vs concrete
+  client `__init__` arg types
+- `test_devices_solaredge.py:62` — MagicMock helper returns Any
+
+`mypy --strict` runs cleanly on the 16 files I touched
+(`src/energy_orchestrator/orchestrator.py`, `prices/`, `web/`,
+`tests/unit/test_orchestrator.py`, `tests/unit/test_prices_cache.py`,
+`tests/integration/test_web_app.py`). Yesterday's history claims gates were
+green; either the mypy version drifted or the prior run wasn't full-strict.
+Worth a separate cleanup pass — out of scope for this session.
+
+### State at end-of-session
+
+- Tick loop runs every 30s by default (config.poll_interval_s). It reads
+  all five devices in parallel, refreshes prices when stale, persists a
+  partial Reading on missing data, runs the engine when SoC is present,
+  and would actuate SolarEdge if `decision.dry_run=False` (currently
+  `True` in `config.example.yaml`).
+- Dashboard at `/` shows the tile grid + day-ahead bar chart + 24h SoC
+  overlay + recent decisions table.
+- Until the user fills in real device IPs and an ENTSO-E token, the tick
+  loop will record errors per source but the app stays up; charts show
+  empty-state placeholder text.
+- Vendored `chart.umd.min.js` is in `src/energy_orchestrator/web/static/
+  vendor/` and gets served at `/static/vendor/chart.umd.min.js`.
+
+### Next session
+
+Phase 11 (config GUI, 2d) is the largest remaining item. Phase 12
+(structlog) and Phase 13 (test coverage push) are smaller and would
+strengthen the foundation. Also: the 10 pre-existing mypy errors should
+be triaged before they accumulate.
+
+## 2026-05-01 (later) — Chart merge + code review pass
+
+Same day, follow-on work after the user smoke-tested the dashboard.
+**232 → 220 tests pass, all four gates green** (ruff / ruff-format / black
+/ mypy --strict — including the 10 pre-existing errors that were carried
+forward).
+
+### Two charts → one combined chart
+
+Per user request, the day-ahead bar chart and the SoC overlay chart got
+merged into a single `<canvas id="mainChart">` on the dashboard:
+- **Bars** (left axis €/kWh): hourly day-ahead injection prices, red on
+  negative hours, accent outline on the current hour, muted otherwise.
+- **Line** (right axis 0–100 %): battery SoC over the last 24 h, smoothed.
+- Shared time x-axis. Dual-axis tooltips report the right unit per series.
+
+Dropped from the old design:
+- **ON/OFF zone shading** (the custom Chart.js plugin from yesterday).
+  The user didn't ask for it in the merged view; one less moving part.
+- **Dashed amber price line** that used to overlay the SoC chart — now
+  redundant since prices are bars.
+
+Files touched: `templates/dashboard.html` (one section instead of two),
+`static/dashboard.js` (single `renderCombined`, plus the inline date
+adapter kept for the time scale), `static/style.css` (chart-card-tall is
+the only height variant now), `tests/integration/test_web_app.py`
+(asserts the merged canvas id, not the old two).
+
+### Stray-byte glitch in `views.py` — Dropbox sync
+
+While re-running gates, pytest collection failed with `SyntaxError` on
+`src/energy_orchestrator/web/views.py:1`: a stray leading `2` had appeared
+in front of the module docstring. Cause is the "Dropbox path is fragile"
+issue called out in the 2026-04-30 entry. Removed the byte. Worth keeping
+an eye out for similar corruptions on this filesystem.
+
+### Code-review pass (user asked for "review the complete code")
+
+Issues found and fixed:
+
+1. **Duplicate helper.** `orchestrator.py` had its own
+   `_current_hour_price` that was identical to
+   `decision/forecast.py:get_current_hour_price`. Deleted, imported the
+   existing one. -10 LOC, one less drift risk.
+2. **Hardcoded source-name list (×2).** Both `web/api.py:get_health` and
+   `web/views.py:debug_board` enumerated `[SourceName.SONNEN.value, ...]`
+   by hand. Replaced with `for source in SourceName:` so adding a new
+   source automatically picks up the panel.
+3. **Pre-existing mypy errors (10) — finally cleaned up.** Yesterday's
+   note flagged that `mypy --strict` was failing in three test files I
+   hadn't touched. Fixed in this pass:
+   - `test_config_models.py`: 3 of the 6 `# type: ignore` comments were
+     genuinely unused (Pydantic 2's mypy plugin now accepts dict-coercion
+     args without ignore for nested-model fields). Removed those three.
+     The other three (frozen-write, missing required field, extra field)
+     **are** load-bearing — restored.
+   - `test_devices_homewizard.py:_make_config`: generified with a
+     `TypeVar("HwConfigT", bound=HomeWizardDeviceConfig)`. Return type
+     now tracks input class, so `CarChargerClient(_make_config(CarChargerConfig, …))`
+     type-checks.
+   - `test_devices_solaredge.py:_patch_modbus`: wrapped the return in
+     `cast(MagicMock, instance)` — mypy can't infer that
+     `mock_cls.return_value` is a `MagicMock`.
+
+Considered and **rejected** during the review:
+- Splitting `TickLoop` (~280 LOC) into smaller classes — current size is
+  fine, premature.
+- Parallelising `_close_resources` with `asyncio.gather` — serial closes
+  are fast enough, not on a hot path.
+- Rewriting `_classify_source_status` for clarity — dense but correct,
+  pinned by tests.
+- An `EO_DISABLE_TICK_LOOP` env var — the existing `start_tick_loop=`
+  kwarg is the cleaner shape (one entry point, no env-var ladder).
+
+### State at end-of-session
+
+- Single combined dashboard chart, bars + line, dual axis. Renders
+  correctly on a real uvicorn boot; verified `200` on `/`,
+  `/static/dashboard.js`, `/static/vendor/chart.umd.min.js`,
+  `/api/prices`.
+- All four quality gates clean (ruff / ruff-format / black / mypy --strict
+  / 220 tests).
+- The user is currently away from home; tick loop will spam device-read
+  errors against the unreachable LAN IPs. To populate the price chart
+  while away, options documented in the chat: ENTSO-E token (slow signup,
+  real prices) or CSV provider (immediate, hand-rolled file).

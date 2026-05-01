@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -59,7 +60,7 @@ def _patch_modbus(
     write_result.isError.return_value = write_is_error
     instance.write_register = AsyncMock(return_value=write_result)
 
-    return instance
+    return cast(MagicMock, instance)
 
 
 # ----- read --------------------------------------------------------------------

@@ -1,9 +1,9 @@
 """FastAPI application factory + lifespan.
 
-For now the lifespan opens the SQLite engine and ensures the schema exists.
-Devices, the price provider, and the background tick loop are wired in by
-a follow-up phase — endpoints that depend on live readings simply return
-empty results until then.
+The lifespan opens the SQLite engine, ensures the schema exists, builds the
+``PriceCache`` and ``OverrideController``, and (unless explicitly disabled)
+starts the orchestrator tick loop. Tests pass ``start_tick_loop=False`` so
+the test app doesn't try to talk to non-existent devices on every fixture.
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ from energy_orchestrator.data import (
     create_session_factory,
     init_schema,
 )
+from energy_orchestrator.orchestrator import TickLoop
+from energy_orchestrator.prices import PriceCache
 from energy_orchestrator.web.api import router as api_router
 from energy_orchestrator.web.override import OverrideController
 from energy_orchestrator.web.views import router as views_router
@@ -36,16 +38,39 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     config: AppConfig = app.state.config
     db_engine = create_engine(config.storage.sqlite_path)
     await init_schema(db_engine)
+    session_factory = create_session_factory(db_engine)
+    override_controller = OverrideController()
+    price_cache = PriceCache()
+
     app.state.db_engine = db_engine
-    app.state.session_factory = create_session_factory(db_engine)
-    app.state.override_controller = OverrideController()
+    app.state.session_factory = session_factory
+    app.state.override_controller = override_controller
+    app.state.price_cache = price_cache
+
+    tick_loop: TickLoop | None = None
+    if app.state.start_tick_loop:
+        tick_loop = TickLoop(
+            config=config,
+            session_factory=session_factory,
+            override_controller=override_controller,
+            price_cache=price_cache,
+        )
+        await tick_loop.start()
+    app.state.tick_loop = tick_loop
+
     try:
         yield
     finally:
+        if tick_loop is not None:
+            await tick_loop.stop()
         await db_engine.dispose()
 
 
-def create_app(config: AppConfig | None = None) -> FastAPI:
+def create_app(
+    config: AppConfig | None = None,
+    *,
+    start_tick_loop: bool = True,
+) -> FastAPI:
     if config is None:
         config_path = os.environ.get("EO_CONFIG", "config.yaml")
         config = load_config(config_path)
@@ -61,6 +86,7 @@ def create_app(config: AppConfig | None = None) -> FastAPI:
         lifespan=_lifespan,
     )
     app.state.config = config
+    app.state.start_tick_loop = start_tick_loop
 
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
     app.include_router(api_router)

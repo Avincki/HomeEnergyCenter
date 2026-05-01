@@ -1,5 +1,9 @@
 {% extends "base.html" %}
 {% block title %}Dashboard &mdash; Energy Orchestrator{% endblock %}
+{% block extra_head %}
+    <script src="{{ url_for('static', path='/vendor/chart.umd.min.js') }}" defer></script>
+    <script src="{{ url_for('static', path='/dashboard.js') }}" defer></script>
+{% endblock %}
 {% block content %}
 
 <section class="state-card {% if decision and decision.state == 'on' %}state-on{% elif decision and decision.state == 'off' %}state-off{% else %}state-unknown{% endif %}">
@@ -53,6 +57,14 @@
         <div class="tile-value">{{ override.mode | upper }}</div>
         {% if override.expires_at %}<div class="tile-hint">until {{ override.expires_at.strftime("%H:%M") }}</div>{% endif %}
     </div>
+</section>
+
+<section>
+    <h2>Day-ahead price + battery SoC</h2>
+    <div class="chart-card chart-card-tall">
+        <canvas id="mainChart"></canvas>
+    </div>
+    <p class="hint">Bars = injection &euro;/kWh (left axis; red = negative, accent outline = current hour). Line = battery SoC % (right axis).</p>
 </section>
 
 <section>

@@ -136,9 +136,9 @@ def test_small_solar_peak_required() -> None:
 
 def test_homewizard_block() -> None:
     cfg = HomeWizardConfig(
-        car_charger={"host": "1.1.1.1"},  # type: ignore[arg-type]
-        p1_meter={"host": "1.1.1.2"},  # type: ignore[arg-type]
-        small_solar={"host": "1.1.1.3", "peak_w": 2000},  # type: ignore[arg-type]
+        car_charger={"host": "1.1.1.1"},
+        p1_meter={"host": "1.1.1.2"},
+        small_solar={"host": "1.1.1.3", "peak_w": 2000},
     )
     assert cfg.car_charger.charging_threshold_w == 500.0  # default
     assert cfg.small_solar.peak_w == 2000

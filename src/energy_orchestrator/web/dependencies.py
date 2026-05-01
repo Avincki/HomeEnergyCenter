@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from energy_orchestrator.config.models import AppConfig
 from energy_orchestrator.data import UnitOfWork
+from energy_orchestrator.prices import PriceCache
 from energy_orchestrator.web.override import OverrideController
 
 
@@ -24,6 +25,10 @@ def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:
 
 def get_override_controller(request: Request) -> OverrideController:
     return request.app.state.override_controller  # type: ignore[no-any-return]
+
+
+def get_price_cache(request: Request) -> PriceCache:
+    return request.app.state.price_cache  # type: ignore[no-any-return]
 
 
 def get_uow(request: Request) -> UnitOfWork:

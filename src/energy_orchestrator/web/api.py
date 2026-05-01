@@ -5,7 +5,7 @@ Endpoints (all under ``/api``):
   GET  /history?h=24          readings + decisions, last N hours
   GET  /sources               last success/error per source
   GET  /health                config + per-source health snapshot
-  GET  /prices                upcoming day-ahead prices (empty until tick loop wired)
+  GET  /prices                today + tomorrow's day-ahead prices from the in-memory cache
   POST /override              { mode, minutes? } — apply or clear override
 """
 
@@ -26,9 +26,11 @@ from energy_orchestrator.data.models import (
     SourceName,
     SourceStatus,
 )
+from energy_orchestrator.prices import PriceCache
 from energy_orchestrator.web.dependencies import (
     get_config,
     get_override_controller,
+    get_price_cache,
     get_uow,
 )
 from energy_orchestrator.web.override import OverrideController
@@ -36,6 +38,7 @@ from energy_orchestrator.web.override import OverrideController
 ConfigDep = Annotated[AppConfig, Depends(get_config)]
 UowDep = Annotated[UnitOfWork, Depends(get_uow)]
 OverrideDep = Annotated[OverrideController, Depends(get_override_controller)]
+PriceCacheDep = Annotated[PriceCache, Depends(get_price_cache)]
 
 router = APIRouter(prefix="/api")
 
@@ -181,17 +184,10 @@ async def get_health(config: ConfigDep, uow: UowDep) -> dict[str, Any]:
     async with uow:
         rows = {s.source_name: s for s in await uow.source_status.all()}
 
-    expected = [
-        SourceName.SONNEN.value,
-        SourceName.CAR_CHARGER.value,
-        SourceName.P1_METER.value,
-        SourceName.SMALL_SOLAR.value,
-        SourceName.SOLAREDGE.value,
-        SourceName.PRICES.value,
-    ]
     sources_health = []
     overall_ok = True
-    for name in expected:
+    for source in SourceName:
+        name = source.value
         row = rows.get(name)
         if row is None:
             status = "UNKNOWN"
@@ -222,11 +218,31 @@ async def get_health(config: ConfigDep, uow: UowDep) -> dict[str, Any]:
 
 
 @router.get("/prices")
-async def get_prices() -> dict[str, Any]:
-    # Populated by the orchestrator tick loop (next phase). Empty for now.
+async def get_prices(price_cache: PriceCacheDep) -> dict[str, Any]:
+    """Return cached day-ahead price points covering today + tomorrow (UTC).
+
+    The cache is populated by the orchestrator tick loop. Until the loop has
+    produced a successful fetch, ``prices`` is an empty list and
+    ``last_refresh`` is ``null``.
+    """
+    now = datetime.now(UTC)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=2)
+    points = price_cache.points_in_range(start, end)
     return {
-        "prices": [],
-        "note": "price cache populates once the orchestrator tick loop is running",
+        "last_refresh": (
+            price_cache.last_refresh.isoformat() if price_cache.last_refresh else None
+        ),
+        "window_start": start.isoformat(),
+        "window_end": end.isoformat(),
+        "prices": [
+            {
+                "timestamp": p.timestamp.isoformat(),
+                "consumption_eur_per_kwh": p.consumption_eur_per_kwh,
+                "injection_eur_per_kwh": p.injection_eur_per_kwh,
+            }
+            for p in points
+        ],
     }
 
 

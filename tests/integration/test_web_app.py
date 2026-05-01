@@ -30,6 +30,7 @@ from energy_orchestrator.data import (
     SourceName,
     UnitOfWork,
 )
+from energy_orchestrator.prices import PricePoint
 from energy_orchestrator.web.app import create_app
 
 
@@ -58,7 +59,7 @@ def _make_config(tmp_path: Path) -> AppConfig:
 
 @pytest_asyncio.fixture
 async def client(tmp_path: Path) -> AsyncIterator[AsyncClient]:
-    app = create_app(_make_config(tmp_path))
+    app = create_app(_make_config(tmp_path), start_tick_loop=False)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as ac:
         # Trigger the lifespan startup so app.state is populated.
@@ -167,11 +168,12 @@ async def test_health_ok_when_recent_success(client: AsyncClient) -> None:
 # ----- API: /api/prices --------------------------------------------------------
 
 
-async def test_prices_returns_empty_with_note(client: AsyncClient) -> None:
+async def test_prices_returns_empty_until_cache_populated(client: AsyncClient) -> None:
     resp = await client.get("/api/prices")
     body = resp.json()
     assert body["prices"] == []
-    assert "tick loop" in body["note"]
+    assert body["last_refresh"] is None
+    assert "window_start" in body and "window_end" in body
 
 
 # ----- API: /api/override ------------------------------------------------------
@@ -258,6 +260,47 @@ async def test_static_css_served(client: AsyncClient) -> None:
     resp = await client.get("/static/style.css")
     assert resp.status_code == 200
     assert "text/css" in resp.headers["content-type"]
+
+
+async def test_vendored_chartjs_served_offline(client: AsyncClient) -> None:
+    """The chart library MUST ship with the orchestrator (no CDN, home LAN)."""
+    resp = await client.get("/static/vendor/chart.umd.min.js")
+    assert resp.status_code == 200
+    assert "Chart.js" in resp.text
+
+
+async def test_dashboard_includes_combined_chart_canvas(client: AsyncClient) -> None:
+    resp = await client.get("/")
+    assert 'id="mainChart"' in resp.text
+    assert "/static/vendor/chart.umd.min.js" in resp.text
+    assert "/static/dashboard.js" in resp.text
+
+
+async def test_prices_endpoint_returns_cached_points_after_replace(client: AsyncClient) -> None:
+    cache = client._transport.app.state.price_cache  # type: ignore[attr-defined]
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+
+    cache.replace(
+        [
+            PricePoint(
+                timestamp=now,
+                consumption_eur_per_kwh=0.20,
+                injection_eur_per_kwh=0.05,
+            ),
+            PricePoint(
+                timestamp=now + timedelta(hours=1),
+                consumption_eur_per_kwh=0.21,
+                injection_eur_per_kwh=-0.01,
+            ),
+        ],
+        now,
+    )
+
+    resp = await client.get("/api/prices")
+    body = resp.json()
+    assert len(body["prices"]) == 2
+    assert body["last_refresh"] is not None
+    assert body["prices"][1]["injection_eur_per_kwh"] == -0.01
 
 
 async def test_openapi_includes_all_endpoints(client: AsyncClient) -> None:

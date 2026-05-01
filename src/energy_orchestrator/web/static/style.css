@@ -238,3 +238,19 @@ pre {
     border-radius: 6px;
     text-align: center;
 }
+
+.chart-card {
+    background: var(--panel);
+    padding: 1rem;
+    border-radius: 6px;
+    height: 220px;
+    position: relative;
+}
+
+.chart-card-tall { height: 320px; }
+
+.chart-card canvas {
+    display: block;
+    width: 100% !important;
+    height: 100% !important;
+}

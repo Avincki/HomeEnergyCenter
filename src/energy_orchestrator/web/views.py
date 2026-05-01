@@ -76,16 +76,9 @@ async def debug_board(
         sources_by_name = {s.source_name: s for s in await uow.source_status.all()}
         recent_decisions = list(await uow.decisions.recent(hours=24))
 
-    expected = [
-        SourceName.SONNEN.value,
-        SourceName.CAR_CHARGER.value,
-        SourceName.P1_METER.value,
-        SourceName.SMALL_SOLAR.value,
-        SourceName.SOLAREDGE.value,
-        SourceName.PRICES.value,
-    ]
     health_rows = []
-    for name in expected:
+    for source in SourceName:
+        name = source.value
         row = sources_by_name.get(name)
         health_rows.append(
             {

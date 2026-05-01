@@ -66,7 +66,7 @@ Create FastAPI application with RESTful endpoints for device status, configurati
 
 ## 11. Create Configuration GUI Application
 
-- [ ] **Estimated time:** 2d
+- [x] **Estimated time:** 2d (delivered as MVP — encryption / mDNS / dry-run sim deferred)
 
 Build modern tabbed configuration interface using tkinter with ttk styling. Implement all four configuration tabs (Device Configuration, Decision Logic, System & Monitoring, Validation & Deployment) with real-time validation and testing capabilities. Add configuration import/export, versioning, and backup functionality with encryption support.
 

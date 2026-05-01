@@ -328,3 +328,86 @@ Considered and **rejected** during the review:
   errors against the unreachable LAN IPs. To populate the price chart
   while away, options documented in the chat: ENTSO-E token (slow signup,
   real prices) or CSV provider (immediate, hand-rolled file).
+
+## 2026-05-01 (later still) — Phase 11: tkinter config editor
+
+Phase 11 delivered as a pragmatic MVP, not the aspirational spec. **240
+tests pass** (220 -> 240, +20 binding/probe tests), all four gates green
+across 65 source files.
+
+### What shipped
+
+- `src/energy_orchestrator/gui/binding.py` — **pure** form-binding layer.
+  Flat dotted-key dicts in/out (`"sonnen.host" -> "192.168.1.50"`). No
+  tkinter imports, so all logic is unit-testable on a headless runner.
+  Handles SecretStr unwrap, Path -> POSIX, enum -> .value, empty-string
+  -> None for optional fields. Atomic YAML save with one `.bak` slot
+  via `os.replace`.
+- `src/energy_orchestrator/gui/probe.py` — async-to-tk bridge. Each
+  "Test connection" button spawns a daemon thread, runs `health_check()`
+  on a private event loop, posts a `ProbeResult` back to a callback
+  (which the GUI marshals to the tk main thread via `root.after(0, …)`).
+- `src/energy_orchestrator/gui/app.py` — `ConfigEditorApp` class with 4
+  ttk.Notebook tabs (Devices / Decision / System / Validate & Save), 45
+  form fields, per-device Test buttons, per-field error labels, status
+  bar. Field definitions live as module-level `FieldSpec` tuples — easy
+  to add/remove without touching the layout code.
+- `gui.py` at project root — entry script mirroring the `main.py` shape.
+  `python gui.py` (or `EO_CONFIG=foo.yaml python gui.py`) opens the
+  editor on the chosen file. Opens cleanly even when the existing config
+  fails Pydantic validation (so the user can fix it).
+- Tests: `tests/unit/test_gui_binding.py` (16 tests) and
+  `tests/unit/test_gui_probe.py` (4 tests).
+
+### What was deliberately *not* done vs. CLAUDE.alex-vinckier.md spec
+
+- **Encryption at rest** — the YAML file is the canonical source; encrypting
+  it would break `git diff` and the existing `load_config` loader.
+- **mDNS / SSDP auto-discovery** — separate concern, unrelated to config
+  editing. Worth a follow-up phase if device IPs become a frequent edit.
+- **Capability detection / firmware compatibility checks** — no APIs on
+  these devices for that. Premature.
+- **Multi-version rollback / config history** — one `.bak` slot is enough
+  for the "I just broke it, undo" case. Anything heavier should use git.
+- **Real-time validation as you type** — UX is identical with on-save
+  validation that surfaces per-field errors next to the offending input
+  (red label appears on Save click, clears on next valid Save).
+- **Dry-run simulation with historical data** — huge separate feature,
+  out of scope for "edit the config file".
+
+Net: scope ≈ 30 % of the aspirational spec, but covers 100 % of what's
+actually needed to edit `config.yaml` from a desktop instead of a text
+editor.
+
+### Notable design choices
+
+- **Form values are all strings.** Tkinter `StringVar`s work uniformly;
+  type coercion (`"30" -> 30.0`, `"true" -> True`) happens once at the
+  Pydantic boundary in `form_to_config`. Avoids a thicket of
+  `IntVar`/`DoubleVar`/`BooleanVar` plus per-widget conversion logic.
+- **Booleans use BooleanVar, not StringVar.** Checkbutton needs a real
+  bool. `current_form()` serialises it to `"true"`/`"false"` so the form
+  dict stays uniformly stringy. Pydantic accepts both forms.
+- **Probe factories are tiny pure functions** (`sonnen_probe_factory(form)
+  -> DeviceConfig | str`). Easy to test, easy to add a sixth device.
+- **45 fields** — that's every editable field on the AppConfig surface,
+  not just the headline ones. Means a user can rebind the web port,
+  tweak `forecast_horizon_h`, or change SQLite location without touching
+  the YAML.
+
+### State at end-of-session
+
+- `python gui.py` opens the editor; saves go to `config.yaml`, previous
+  version preserved as `config.yaml.bak`.
+- Probe buttons fire async health-checks against the configured device
+  IPs; while away from home all five will fail, but the GUI handles that
+  gracefully (red status text, GUI stays responsive).
+- All four gates clean: ruff / ruff-format / black / mypy --strict / 240
+  pytest.
+
+### Next session
+
+Phase 12 (structlog) is now the smallest remaining item (1d) and the
+most leverage per day for ops visibility. Phase 13 (test coverage push)
+and Phase 14 (mkdocs) round out the workplan. The 4 phases left are
+all relatively self-contained — no further dependencies between them.

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}API &mdash; Energy Orchestrator{% endblock %}
+{% block extra_head %}
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui.css">
+{% endblock %}
+{% block content %}
+
+<section>
+    <h2>API</h2>
+    <p class="hint">
+        Interactive OpenAPI / Swagger UI for the JSON endpoints under <code>/api</code>.
+        The raw spec is available at <a href="/openapi.json">/openapi.json</a>.
+    </p>
+</section>
+
+<div id="swagger-ui" class="swagger-host"></div>
+
+<script src="https://cdn.jsdelivr.net/npm/swagger-ui-dist@5/swagger-ui-bundle.js"></script>
+<script>
+window.addEventListener('load', function () {
+    SwaggerUIBundle({
+        url: '/openapi.json',
+        dom_id: '#swagger-ui',
+        deepLinking: true,
+        layout: 'BaseLayout',
+    });
+});
+</script>
+
+{% endblock %}

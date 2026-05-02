@@ -50,7 +50,7 @@ nav a:hover {
 }
 
 main {
-    max-width: 1100px;
+    max-width: 1400px;
     margin: 0 auto;
     padding: 2rem;
 }
@@ -263,6 +263,15 @@ pre {
     display: block;
 }
 
+.config-columns {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1.5rem;
+    align-items: start;
+}
+
+.config-column { margin-bottom: 0; }
+
 .config-form fieldset {
     background: var(--panel);
     border: 1px solid var(--panel-2);
@@ -280,16 +289,17 @@ pre {
 }
 
 .config-row {
-    display: grid;
-    grid-template-columns: 220px 280px 1fr;
-    gap: 0.75rem;
-    align-items: center;
-    padding: 0.35rem 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.4rem 0;
 }
 
 .config-row label {
-    color: var(--text);
-    font-size: 0.9rem;
+    color: var(--muted);
+    font-size: 0.78rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
     flex-direction: row;
 }
 
@@ -305,13 +315,25 @@ pre {
     width: 100%;
 }
 
-.config-row input[type="checkbox"] { width: 1.1rem; height: 1.1rem; }
+.config-row input[type="checkbox"] {
+    width: 1.1rem;
+    height: 1.1rem;
+    align-self: flex-start;
+}
 
 .config-meta {
     display: flex;
     flex-direction: column;
     gap: 0.15rem;
-    font-size: 0.8rem;
+    font-size: 0.75rem;
+}
+
+@media (max-width: 1100px) {
+    .config-columns { grid-template-columns: repeat(2, 1fr); }
+}
+
+@media (max-width: 720px) {
+    .config-columns { grid-template-columns: 1fr; }
 }
 
 .config-error { color: var(--error); }
@@ -342,3 +364,83 @@ pre {
 
 .banner-success { background: rgba(34, 197, 94, 0.15); color: var(--on); border: 1px solid var(--on); }
 .banner-error   { background: rgba(239, 68, 68, 0.15); color: var(--error); border: 1px solid var(--error); }
+
+/* Swagger UI host: keep its own white theme but framed in our panel. */
+.swagger-host {
+    background: #fff;
+    border-radius: 6px;
+    padding: 0.5rem 1rem;
+}
+
+/* ----- Live log viewer ----- */
+
+.log-controls {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    align-items: center;
+    background: var(--panel);
+    padding: 0.75rem 1rem;
+    border-radius: 6px;
+    margin-bottom: 0.75rem;
+}
+
+.log-controls label {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+}
+
+.log-controls input[type="text"],
+.log-controls select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--panel-2);
+    padding: 0.35rem 0.6rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+}
+
+.log-controls button {
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--panel-2);
+    padding: 0.4rem 0.9rem;
+    border-radius: 4px;
+    font-size: 0.85rem;
+    cursor: pointer;
+}
+
+.log-controls button:hover { background: var(--accent); color: #000; }
+
+.log-toggle input[type="checkbox"] { width: 1rem; height: 1rem; }
+
+.log-stream {
+    background: var(--panel);
+    border: 1px solid var(--panel-2);
+    border-radius: 6px;
+    padding: 0.75rem 1rem;
+    height: 70vh;
+    overflow-y: auto;
+    margin: 0;
+    font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 0.78rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.log-row { display: block; padding: 0.05rem 0; }
+.log-time   { color: var(--muted); }
+.log-logger { color: var(--accent); }
+.log-event  { color: var(--text); }
+.log-extras { color: var(--muted); font-style: italic; }
+
+.log-level { display: inline-block; min-width: 5.5em; font-weight: 600; }
+.log-level-debug    { color: var(--muted); }
+.log-level-info     { color: var(--on); }
+.log-level-warning  { color: var(--warn); }
+.log-level-error    { color: var(--error); }
+.log-level-critical { color: #fff; background: var(--error); padding: 0 0.3rem; border-radius: 2px; }

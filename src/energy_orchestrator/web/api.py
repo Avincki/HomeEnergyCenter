@@ -11,10 +11,14 @@ Endpoints (all under ``/api``):
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from energy_orchestrator.config.models import AppConfig
@@ -244,6 +248,73 @@ async def get_prices(price_cache: PriceCacheDep) -> dict[str, Any]:
             for p in points
         ],
     }
+
+
+@router.get("/logs/stream")
+async def stream_logs(request: Request, config: ConfigDep) -> StreamingResponse:
+    """Server-sent-event stream of the rotating JSON log file.
+
+    Each SSE ``data:`` event carries one log line (already JSON). Client
+    parses it and renders. On startup we replay the tail of the file so the
+    page has immediate context; thereafter we follow new lines as they
+    appear, reopening the file if the rotating handler swaps it out.
+    """
+    log_path = Path(config.logging.log_dir) / "energy_orchestrator.log"
+    return StreamingResponse(
+        _tail_log_sse(request, log_path),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+_INITIAL_TAIL_BYTES = 16 * 1024  # ~100 lines of context on connect
+_POLL_INTERVAL_S = 0.4
+
+
+async def _tail_log_sse(request: Request, log_path: Path) -> AsyncIterator[str]:
+    # Wait for the file to exist (first run before any logs have been written).
+    while not log_path.exists():
+        if await request.is_disconnected():
+            return
+        await asyncio.sleep(_POLL_INTERVAL_S)
+
+    f = await asyncio.to_thread(open, log_path, "r", encoding="utf-8", errors="replace")
+    try:
+        # Seek back ~16 KB so the user lands on recent context, not an empty page.
+        await asyncio.to_thread(f.seek, 0, 2)
+        end = await asyncio.to_thread(f.tell)
+        start = max(0, end - _INITIAL_TAIL_BYTES)
+        await asyncio.to_thread(f.seek, start)
+        if start > 0:
+            await asyncio.to_thread(f.readline)  # discard partial first line
+
+        while True:
+            if await request.is_disconnected():
+                return
+            line = await asyncio.to_thread(f.readline)
+            if line:
+                yield f"data: {line.rstrip()}\n\n"
+                continue
+
+            # No new data — detect rotation (file shrank or was replaced).
+            try:
+                current_size = log_path.stat().st_size
+            except FileNotFoundError:
+                current_size = 0
+            if current_size < f.tell():
+                await asyncio.to_thread(f.close)
+                while not log_path.exists():
+                    if await request.is_disconnected():
+                        return
+                    await asyncio.sleep(_POLL_INTERVAL_S)
+                f = await asyncio.to_thread(
+                    open, log_path, "r", encoding="utf-8", errors="replace"
+                )
+                continue
+
+            await asyncio.sleep(_POLL_INTERVAL_S)
+    finally:
+        await asyncio.to_thread(f.close)
 
 
 @router.post("/override")

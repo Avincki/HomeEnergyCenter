@@ -110,6 +110,16 @@ async def debug_board(
     )
 
 
+@router.get("/logs", response_class=HTMLResponse)
+async def logs_page(request: Request) -> HTMLResponse:
+    return _templates.TemplateResponse(request=request, name="logs.html", context={})
+
+
+@router.get("/docs", response_class=HTMLResponse)
+async def api_docs(request: Request) -> HTMLResponse:
+    return _templates.TemplateResponse(request=request, name="api.html", context={})
+
+
 @router.get("/config", response_class=HTMLResponse)
 async def config_form(
     request: Request,

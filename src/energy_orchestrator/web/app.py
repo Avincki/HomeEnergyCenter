@@ -95,6 +95,7 @@ def create_app(
         ),
         version="0.1.0",
         lifespan=_lifespan,
+        docs_url=None,
     )
     app.state.config = config
     app.state.config_path = resolved_path

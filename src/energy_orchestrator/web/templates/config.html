@@ -18,38 +18,40 @@
 {% endif %}
 
 <form method="post" action="/config" class="config-form" autocomplete="off">
-    {% for tab_title, subsections in sections %}
-    <section>
-        <h2>{{ tab_title }}</h2>
-        {% for sub in subsections %}
-        <fieldset>
-            <legend>{{ sub.title }}</legend>
-            {% for f in sub.fields %}
-            <div class="config-row">
-                <label for="f_{{ f.key }}">{{ f.label }}</label>
-                {% if f.kind == "select" %}
-                    <select id="f_{{ f.key }}" name="{{ f.key }}">
-                        {% for choice in f.choices %}
-                            <option value="{{ choice }}"{% if form.get(f.key) == choice %} selected{% endif %}>{{ choice }}</option>
-                        {% endfor %}
-                    </select>
-                {% elif f.kind == "checkbox" %}
-                    <input type="checkbox" id="f_{{ f.key }}" name="{{ f.key }}" value="true"{% if form.get(f.key, "false") == "true" %} checked{% endif %}>
-                {% elif f.kind == "password" %}
-                    <input type="password" id="f_{{ f.key }}" name="{{ f.key }}" value="{{ form.get(f.key, '') }}">
-                {% else %}
-                    <input type="text" id="f_{{ f.key }}" name="{{ f.key }}" value="{{ form.get(f.key, '') }}">
-                {% endif %}
-                <div class="config-meta">
-                    {% if errors.get(f.key) %}<span class="config-error">{{ errors[f.key] }}</span>{% endif %}
-                    {% if f.hint %}<span class="config-hint">{{ f.hint }}</span>{% endif %}
+    <div class="config-columns">
+        {% for tab_title, subsections in sections %}
+        <section class="config-column">
+            <h2>{{ tab_title }}</h2>
+            {% for sub in subsections %}
+            <fieldset>
+                <legend>{{ sub.title }}</legend>
+                {% for f in sub.fields %}
+                <div class="config-row">
+                    <label for="f_{{ f.key }}">{{ f.label }}</label>
+                    {% if f.kind == "select" %}
+                        <select id="f_{{ f.key }}" name="{{ f.key }}">
+                            {% for choice in f.choices %}
+                                <option value="{{ choice }}"{% if form.get(f.key) == choice %} selected{% endif %}>{{ choice }}</option>
+                            {% endfor %}
+                        </select>
+                    {% elif f.kind == "checkbox" %}
+                        <input type="checkbox" id="f_{{ f.key }}" name="{{ f.key }}" value="true"{% if form.get(f.key, "false") == "true" %} checked{% endif %}>
+                    {% elif f.kind == "password" %}
+                        <input type="password" id="f_{{ f.key }}" name="{{ f.key }}" value="{{ form.get(f.key, '') }}">
+                    {% else %}
+                        <input type="text" id="f_{{ f.key }}" name="{{ f.key }}" value="{{ form.get(f.key, '') }}">
+                    {% endif %}
+                    <div class="config-meta">
+                        {% if errors.get(f.key) %}<span class="config-error">{{ errors[f.key] }}</span>{% endif %}
+                        {% if f.hint %}<span class="config-hint">{{ f.hint }}</span>{% endif %}
+                    </div>
                 </div>
-            </div>
+                {% endfor %}
+            </fieldset>
             {% endfor %}
-        </fieldset>
+        </section>
         {% endfor %}
-    </section>
-    {% endfor %}
+    </div>
 
     <section class="config-actions">
         <button type="submit">Save (with .bak backup)</button>

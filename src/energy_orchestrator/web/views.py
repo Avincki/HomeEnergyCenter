@@ -1,4 +1,4 @@
-"""HTML view routes — the dashboard at ``/`` and the debug board at ``/debug``."""
+"""HTML view routes — dashboard at ``/``, debug at ``/debug``, config at ``/config``."""
 
 from __future__ import annotations
 
@@ -13,15 +13,24 @@ from fastapi.templating import Jinja2Templates
 from energy_orchestrator.config.models import AppConfig
 from energy_orchestrator.data import UnitOfWork
 from energy_orchestrator.data.models import OverrideMode, SourceName
+from energy_orchestrator.gui.binding import (
+    AppConfigForm,
+    config_to_form,
+    form_to_config,
+    save_with_backup,
+)
 from energy_orchestrator.web.api import _classify_source_status
+from energy_orchestrator.web.config_form import SECTIONS
 from energy_orchestrator.web.dependencies import (
     get_config,
+    get_config_path,
     get_override_controller,
     get_uow,
 )
 from energy_orchestrator.web.override import OverrideController
 
 ConfigDep = Annotated[AppConfig, Depends(get_config)]
+ConfigPathDep = Annotated[Path | None, Depends(get_config_path)]
 UowDep = Annotated[UnitOfWork, Depends(get_uow)]
 OverrideDep = Annotated[OverrideController, Depends(get_override_controller)]
 
@@ -97,6 +106,120 @@ async def debug_board(
             "override": _override_summary(controller),
             "config_view": _config_view(config),
             "override_modes": [m.value for m in OverrideMode],
+        },
+    )
+
+
+@router.get("/config", response_class=HTMLResponse)
+async def config_form(
+    request: Request,
+    config: ConfigDep,
+    config_path: ConfigPathDep,
+) -> HTMLResponse:
+    return _render_config_form(
+        request=request,
+        form=config_to_form(config),
+        errors={},
+        message=None,
+        message_kind=None,
+        config_path=config_path,
+    )
+
+
+@router.post("/config", response_class=HTMLResponse)
+async def config_save(
+    request: Request,
+    config_path: ConfigPathDep,
+) -> HTMLResponse:
+    raw = await request.form()
+    form = _form_from_post(raw)
+
+    new_config, errors = form_to_config(form)
+    if errors or new_config is None:
+        return _render_config_form(
+            request=request,
+            form=form,
+            errors=errors,
+            message=f"{len(errors)} validation error(s) — see red text below each field.",
+            message_kind="error",
+            config_path=config_path,
+        )
+
+    if config_path is None:
+        return _render_config_form(
+            request=request,
+            form=form,
+            errors={},
+            message=(
+                "Config validates, but no file path is bound to this app instance — "
+                "save skipped. (Run via main.py / EO_CONFIG to enable saving.)"
+            ),
+            message_kind="error",
+            config_path=config_path,
+        )
+
+    try:
+        save_with_backup(new_config, config_path)
+    except OSError as exc:
+        return _render_config_form(
+            request=request,
+            form=form,
+            errors={},
+            message=f"Save failed: {exc}",
+            message_kind="error",
+            config_path=config_path,
+        )
+
+    return _render_config_form(
+        request=request,
+        form=config_to_form(new_config),
+        errors={},
+        message=(
+            f"Saved to {config_path} (previous version kept as .bak). "
+            "Restart the orchestrator for changes to take effect."
+        ),
+        message_kind="success",
+        config_path=config_path,
+    )
+
+
+def _form_from_post(raw: Any) -> AppConfigForm:
+    """Convert FastAPI form-data into the dotted-key form dict.
+
+    Unchecked checkboxes don't appear in form data; we backfill them as
+    "false" so the boolean fields validate cleanly.
+    """
+    out: AppConfigForm = {}
+    for section in SECTIONS:
+        for sub in section[1]:
+            for f in sub.fields:
+                if f.kind == "checkbox":
+                    out[f.key] = "true" if raw.get(f.key) else "false"
+                else:
+                    value = raw.get(f.key)
+                    out[f.key] = "" if value is None else str(value)
+    return out
+
+
+def _render_config_form(
+    *,
+    request: Request,
+    form: AppConfigForm,
+    errors: dict[str, str],
+    message: str | None,
+    message_kind: str | None,
+    config_path: Path | None,
+) -> HTMLResponse:
+    return _templates.TemplateResponse(
+        request=request,
+        name="config.html",
+        context={
+            "sections": SECTIONS,
+            "form": form,
+            "errors": errors,
+            "message": message,
+            "message_kind": message_kind,
+            "config_path": str(config_path) if config_path else None,
         },
     )
 

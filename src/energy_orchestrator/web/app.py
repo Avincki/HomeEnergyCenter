@@ -74,10 +74,17 @@ def create_app(
     config: AppConfig | None = None,
     *,
     start_tick_loop: bool = True,
+    config_path: str | Path | None = None,
 ) -> FastAPI:
+    resolved_path: Path | None = None
     if config is None:
-        config_path = os.environ.get("EO_CONFIG", "config.yaml")
-        config = load_config(config_path)
+        env_path = config_path if config_path is not None else os.environ.get(
+            "EO_CONFIG", "config.yaml"
+        )
+        resolved_path = Path(env_path).resolve()
+        config = load_config(resolved_path)
+    elif config_path is not None:
+        resolved_path = Path(config_path).resolve()
 
     app = FastAPI(
         title="Energy Orchestrator",
@@ -90,6 +97,7 @@ def create_app(
         lifespan=_lifespan,
     )
     app.state.config = config
+    app.state.config_path = resolved_path
     app.state.start_tick_loop = start_tick_loop
 
     app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")

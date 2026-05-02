@@ -6,6 +6,8 @@ handler stashed it during startup. Routes consume them via ``Depends(...)``.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -17,6 +19,10 @@ from energy_orchestrator.web.override import OverrideController
 
 def get_config(request: Request) -> AppConfig:
     return request.app.state.config  # type: ignore[no-any-return]
+
+
+def get_config_path(request: Request) -> Path | None:
+    return request.app.state.config_path  # type: ignore[no-any-return]
 
 
 def get_session_factory(request: Request) -> async_sessionmaker[AsyncSession]:

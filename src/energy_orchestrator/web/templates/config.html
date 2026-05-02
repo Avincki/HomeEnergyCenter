@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}Config &mdash; Energy Orchestrator{% endblock %}
+{% block content %}
+
+<section>
+    <h2>Configuration</h2>
+    <p class="hint">
+        Edits write to
+        <code>{{ config_path or "(no file bound)" }}</code>
+        with a single <code>.bak</code> backup. Changes take effect after restarting the orchestrator.
+    </p>
+</section>
+
+{% if message %}
+<section>
+    <div class="banner banner-{{ message_kind }}">{{ message }}</div>
+</section>
+{% endif %}
+
+<form method="post" action="/config" class="config-form" autocomplete="off">
+    {% for tab_title, subsections in sections %}
+    <section>
+        <h2>{{ tab_title }}</h2>
+        {% for sub in subsections %}
+        <fieldset>
+            <legend>{{ sub.title }}</legend>
+            {% for f in sub.fields %}
+            <div class="config-row">
+                <label for="f_{{ f.key }}">{{ f.label }}</label>
+                {% if f.kind == "select" %}
+                    <select id="f_{{ f.key }}" name="{{ f.key }}">
+                        {% for choice in f.choices %}
+                            <option value="{{ choice }}"{% if form.get(f.key) == choice %} selected{% endif %}>{{ choice }}</option>
+                        {% endfor %}
+                    </select>
+                {% elif f.kind == "checkbox" %}
+                    <input type="checkbox" id="f_{{ f.key }}" name="{{ f.key }}" value="true"{% if form.get(f.key, "false") == "true" %} checked{% endif %}>
+                {% elif f.kind == "password" %}
+                    <input type="password" id="f_{{ f.key }}" name="{{ f.key }}" value="{{ form.get(f.key, '') }}">
+                {% else %}
+                    <input type="text" id="f_{{ f.key }}" name="{{ f.key }}" value="{{ form.get(f.key, '') }}">
+                {% endif %}
+                <div class="config-meta">
+                    {% if errors.get(f.key) %}<span class="config-error">{{ errors[f.key] }}</span>{% endif %}
+                    {% if f.hint %}<span class="config-hint">{{ f.hint }}</span>{% endif %}
+                </div>
+            </div>
+            {% endfor %}
+        </fieldset>
+        {% endfor %}
+    </section>
+    {% endfor %}
+
+    <section class="config-actions">
+        <button type="submit">Save (with .bak backup)</button>
+        <a href="/config" class="hint">Reload from disk</a>
+    </section>
+</form>
+
+{% endblock %}

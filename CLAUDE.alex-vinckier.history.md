@@ -610,3 +610,97 @@ config workflow proves annoying — config-change pubsub on app.state
 that rebuilds the device registry + price provider, plus an "applied
 at" indicator in the navbar. Otherwise: Phase 13 (test coverage) and
 Phase 14 (mkdocs) are still the open workplan items.
+
+## 2026-05-02 (later) — Web UI polish: 3-column config, navbar on /docs, /logs viewer
+
+Same-day continuation. Three bite-sized UI features in one push:
+config layout, embedded API docs, and a live log viewer.
+
+### What landed
+
+- **3-column config layout.** User asked the top-level Devices /
+  Decision / System sections to sit side-by-side instead of stacked.
+  Wrapped them in a `<div class="config-columns">` grid
+  (`grid-template-columns: repeat(3, 1fr)`), `align-items: start` so
+  the columns top-align even when content heights differ (Devices is
+  much taller than Decision/System). Within each row, label/input/meta
+  now stack vertically — the previous 220+280px three-column row
+  layout didn't fit at ~330px column width. Bumped `main` max-width
+  1100 -> 1400 so three columns aren't cramped on a typical monitor.
+  Responsive: 3 cols → 2 cols at <1100px → 1 col at <720px.
+- **Navbar on /docs.** The auto-generated FastAPI Swagger UI is its
+  own template, so it didn't carry our nav. Disabled the default
+  via `docs_url=None`, registered a custom `GET /docs` that renders
+  a Jinja template extending `base.html`, with the swagger-ui CSS/JS
+  loaded from the same `cdn.jsdelivr.net` URLs FastAPI defaults to.
+  Same Swagger experience, now framed by our header + footer.
+- **Live log viewer at /logs.** New nav tab between Config and API.
+  Server side: `GET /api/logs/stream` is a `StreamingResponse` with
+  `text/event-stream`. The async generator opens the rotating log
+  file, seeks back ~16 KB on connect (so the page lands on context
+  rather than empty), then `readline()`s in a loop with
+  `asyncio.to_thread` to avoid blocking the event loop. Detects
+  rotation by comparing `log_path.stat().st_size` vs `f.tell()` and
+  reopens. Bails out on `request.is_disconnected()`. Client side:
+  `EventSource` consumes the stream, parses JSON per line, renders as
+  monospace rows with level coloring. Controls: level dropdown
+  (debug+/info+/warning+/error+/critical, default info+), substring
+  filter, follow toggle, pause/resume, clear. Auto-trims to 1000 rows
+  in the DOM.
+
+### Notable design choices
+
+- **SSE, not WebSocket.** One-way server→client, auto-reconnect built
+  into `EventSource`, no extra deps, plays nicely with the existing
+  HTTP server. WebSockets would be overkill.
+- **Three layout columns at the macro level + stacked rows at the
+  micro level.** First instinct was to keep the existing tabular
+  220+280px row layout and just put the sections side-by-side, but
+  doing the math (1400px main / 3 cols / 1.5rem gap = ~440px each)
+  it doesn't fit comfortably. Stacking label-above-input within each
+  row reads cleaner at narrow column widths. The user signed off
+  ("this is perfect").
+- **Swagger UI still loads from CDN.** FastAPI's default `/docs` does
+  too, so this isn't a regression — but per the project spec
+  ("no CDN, home-LAN may not have outbound internet") it's a known
+  deviation. Mentioned to the user; deferred vendoring
+  swagger-ui-bundle.js + swagger-ui.css under `static/vendor/` until
+  / if they go offline.
+- **Initial `align-items: start` change to `.config-row` was based
+  on misreading "3 columns" as the row's three sub-columns.** User
+  clarified they meant the three top-level sections. Left the
+  `align-items: start` change in (defensible improvement on its own,
+  also irrelevant once rows became `flex-direction: column`).
+
+### Stray hiccup — gh CLI vs browser auth
+
+Pushed to `https://github.com/Avincki/HomeEnergyCenter` for the first
+time today. `gh auth login` ran in the background but never completed
+(user closed the browser flow), so `gh auth status` kept reporting not
+logged in. Bypassed `gh` entirely — added the remote with
+`git remote add origin <url>` and pushed via plain HTTPS. Git
+Credential Manager (bundled with Git for Windows) handled the auth
+prompt itself. Worth remembering: for first-push setups on Windows,
+GCM is the path of least resistance; `gh` is only worth setting up
+if you'll use the CLI for issues / PRs / releases.
+
+### State at end-of-session
+
+- Navbar: Dashboard / Debug / Config / Logs / API.
+- Three commits since the last history entry: `f095a2f` (WORKPLAN
+  tick Phase 15 + Phase 16), `fb1d46e` (this UI batch). Plus the
+  history-update commit on top of those.
+- All 22 web integration tests pass; ASGI httpx smoke test of the SSE
+  endpoint hangs (httpx ASGITransport doesn't honor real-time
+  streaming the way uvicorn does) but the structural correctness is
+  visible in the code; user verifies in the browser.
+- Repo lives at `https://github.com/Avincki/HomeEnergyCenter`,
+  tracking origin/main.
+
+### Next session
+
+The hot-reload-on-config-save follow-up is still the highest-leverage
+next chunk for the iterative config workflow. Beyond that: Phase 13
+(test coverage push, including SSE generator tests now that there's
+an async-streaming endpoint), Phase 14 (mkdocs), and possibly
+vendoring Swagger UI assets if/when offline operation matters.

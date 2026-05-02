@@ -505,3 +505,108 @@ remain. Phase 13 has the highest payoff if the user expects to extend
 this in production — push coverage to >90%, add hypothesis property
 tests for the rule engine, contract tests for the device clients.
 Phase 14 is small but valuable for handoff.
+
+## 2026-05-02 — Web config editor (/config page)
+
+User asked what the "API" link in the navbar pointed at (FastAPI's
+auto-generated `/docs` Swagger UI), then asked what it would take to
+add a tab to edit device IPs / API keys. Picked option 2a from the
+discussion: a `/config` page that writes `config.yaml` and prompts
+for restart. Personal/iterative use, no auth needed. Shipped end-to-end.
+
+### What landed
+
+- `src/energy_orchestrator/web/config_form.py` — `WebField` /
+  `WebSection` dataclasses + a `SECTIONS` constant that mirrors the
+  tkinter editor's grouping (Devices / Decision / System). Pure data,
+  no tkinter import — tkinter would otherwise have come in transitively
+  if I'd reused `gui/app.py`'s `FieldSpec` list. Small duplication is
+  the cheaper trade.
+- `src/energy_orchestrator/web/views.py` — added `GET /config` (renders
+  the form prefilled from the live `AppConfig` via
+  `gui.binding.config_to_form`) and `POST /config` (form -> dotted-key
+  dict -> `form_to_config` -> `save_with_backup`). Field-keyed
+  validation errors render inline in red next to the offending input;
+  successful save shows a green banner with the path and a
+  "restart required" reminder.
+- `src/energy_orchestrator/web/templates/config.html` — server-rendered
+  HTML form, no JS. Each section is a `<fieldset>` with a `<legend>`;
+  the three input kinds are text / password / select / checkbox.
+  Pre-fills password fields with the current secret value (personal-use
+  localhost; not a leak risk in this deployment).
+- `src/energy_orchestrator/web/templates/base.html` — added "Config"
+  to the navbar between Debug and API.
+- `src/energy_orchestrator/web/static/style.css` — `.config-form`,
+  `.config-row` (3-column grid: label / input / meta), `.banner-success`
+  / `.banner-error`. ~85 lines of CSS appended.
+- `src/energy_orchestrator/web/app.py` — `create_app()` now takes
+  `config_path: str | Path | None = None`. When `config` is `None` it
+  resolves the path from the kwarg or `EO_CONFIG` env var; when caller
+  passes `config` directly (tests) the path stays None. Resolved path
+  is stashed on `app.state.config_path`.
+- `src/energy_orchestrator/web/dependencies.py` — `get_config_path`
+  helper, returns `Path | None`.
+- POST handler defends against the "no path bound" case with an error
+  banner instead of writing to a default location.
+
+### Reuse, not refactor
+
+The biggest design choice was to **import `gui.binding`** rather than
+re-implementing form -> config conversion. `binding.py`'s docstring
+already declares "no tkinter imports" (line 1-10), and
+`gui/__init__.py` only re-exports from binding — verified by reading.
+So the web layer pulls `config_to_form` / `form_to_config` /
+`save_with_backup` directly. One source of truth for SecretStr
+unwrap, Path-as-POSIX serialisation, and `.bak` rotation. The tkinter
+GUI and the web editor write identical YAML; users can flip between
+them.
+
+### Verified end-to-end
+
+- `imports OK; sections: 3` — module loads.
+- 38 tests pass (`tests/integration/test_web_app.py` +
+  `tests/unit/test_gui_binding.py`).
+- Live `GET /config` returns 200 with `<form method="post">` and a
+  `name="sonnen.host"` input.
+- `POST /config` with an empty `sonnen.host` returns 200 with
+  `class="config-error"` rendered next to the field, no save.
+
+### Deferred / not done
+
+- **Hot reload.** Saves still require a process restart. The tick loop
+  and device clients hold references to the loaded `AppConfig`; live
+  reload would mean reinstantiating the device registry + price
+  provider from app.state on a signal. Not a small refactor. Offered
+  to schedule a follow-up agent in ~2 weeks; user response pending.
+- **Authentication.** The dashboard is unauthenticated and the user
+  confirmed personal use only — no auth added. If this ever escapes
+  the home LAN, gate `/config` behind something before then.
+- **Per-field "Test connection" buttons** like the tkinter editor.
+  Out of scope; the `/debug` page already shows live source health.
+
+### Known fragility (still)
+
+The Dropbox stray-byte issue mentioned in three prior entries didn't
+recur this session, but `views.py` is again the most-edited file in
+the change set. If a syntax error appears at the top of the file on
+the next pull, this is the cause.
+
+### State at end-of-session
+
+- Navbar: Dashboard / Debug / Config / API.
+- `python main.py` -> open `http://localhost:8000/config` -> edit any
+  field -> Save -> success banner with path -> restart `main.py` to
+  apply. `config.yaml.bak` lives next to `config.yaml`.
+- Commit `9f46b20` on `main`. Working tree clean apart from a
+  screenshot the user dropped in for the question about the "API" tab
+  (untracked, intentionally not committed).
+- Tests still pass; no quality-gate run this session beyond the
+  scoped pytest invocation.
+
+### Next session
+
+The hot-reload follow-up is the obvious next chunk if the iterative
+config workflow proves annoying — config-change pubsub on app.state
+that rebuilds the device registry + price provider, plus an "applied
+at" indicator in the navbar. Otherwise: Phase 13 (test coverage) and
+Phase 14 (mkdocs) are still the open workplan items.

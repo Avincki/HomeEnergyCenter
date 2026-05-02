@@ -38,9 +38,8 @@ def test_configure_logging_creates_log_dir_and_file(tmp_path: Path) -> None:
     log_file = tmp_path / "logs" / "energy_orchestrator.log"
     assert log_file.exists()
     records = _read_jsonl(log_file)
-    assert any(
-        r.get("event") == "hello world" and r.get("run") == "t1" for r in records
-    ), f"missing record in {records}"
+    matched = any(r.get("event") == "hello world" and r.get("run") == "t1" for r in records)
+    assert matched, f"missing record in {records}"
 
 
 def test_log_records_carry_iso_timestamp_and_level(tmp_path: Path) -> None:

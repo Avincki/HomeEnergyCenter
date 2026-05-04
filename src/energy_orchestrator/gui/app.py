@@ -99,6 +99,7 @@ _PRICES_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("API key", "prices.api_key", "password", hint="required for entsoe / tibber"),
     FieldSpec("Area", "prices.area", hint="2-letter code (BE/NL/DE/FR/AT/LU) or raw EIC"),
     FieldSpec("CSV path", "prices.csv_path", hint="only when provider=csv"),
+    FieldSpec("Base URL", "prices.base_url", hint="optional — override entsoe REST endpoint"),
     FieldSpec("Injection factor", "prices.injection_factor"),
     FieldSpec("Injection offset (€/kWh)", "prices.injection_offset"),
 )

@@ -70,7 +70,7 @@
         if (!shouldShow(parsed)) return;
 
         const level = (parsed.level || 'info').toLowerCase();
-        const ts = parsed.timestamp ? parsed.timestamp.replace('T', ' ').replace('Z', '') : '';
+        const ts = formatLocalTimestamp(parsed.timestamp);
         const logger = parsed.logger || '';
         const event = parsed.event || '';
 
@@ -93,6 +93,17 @@
         stream.appendChild(row);
         while (stream.children.length > MAX_ROWS) stream.firstChild.remove();
         if (followEl.checked) stream.scrollTop = stream.scrollHeight;
+    }
+
+    function pad(n, width) { return String(n).padStart(width, '0'); }
+
+    function formatLocalTimestamp(raw) {
+        if (!raw) return '';
+        const d = new Date(raw);
+        if (isNaN(d.getTime())) return String(raw);
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1, 2)}-${pad(d.getDate(), 2)} ` +
+               `${pad(d.getHours(), 2)}:${pad(d.getMinutes(), 2)}:${pad(d.getSeconds(), 2)}.` +
+               `${pad(d.getMilliseconds(), 3)}`;
     }
 
     function escapeHtml(s) {

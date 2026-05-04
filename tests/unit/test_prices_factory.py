@@ -25,6 +25,14 @@ def test_factory_returns_entsoe_provider_for_entsoe_config() -> None:
     assert isinstance(provider, EntsoePriceProvider)
 
 
+def test_factory_threads_base_url_into_entsoe_provider() -> None:
+    custom = "https://example.invalid/api"
+    cfg = PricesConfig(provider=PricesProvider.ENTSOE, api_key="k", base_url=custom)
+    provider = create_price_provider(cfg)
+    assert isinstance(provider, EntsoePriceProvider)
+    assert provider._base_url == custom
+
+
 def test_factory_raises_for_tibber() -> None:
     cfg = PricesConfig(provider=PricesProvider.TIBBER, api_key="k")
     with pytest.raises(PriceConfigurationError, match="Tibber"):

@@ -11,6 +11,7 @@ from __future__ import annotations
 import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -50,6 +51,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.session_factory = session_factory
     app.state.override_controller = override_controller
     app.state.price_cache = price_cache
+    app.state.session_started_at = datetime.now(UTC)
 
     tick_loop: TickLoop | None = None
     if app.state.start_tick_loop:

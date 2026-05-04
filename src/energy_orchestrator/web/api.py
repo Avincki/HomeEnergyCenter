@@ -12,6 +12,7 @@ Endpoints (all under ``/api``):
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -255,23 +256,49 @@ async def stream_logs(request: Request, config: ConfigDep) -> StreamingResponse:
     """Server-sent-event stream of the rotating JSON log file.
 
     Each SSE ``data:`` event carries one log line (already JSON). Client
-    parses it and renders. On startup we replay the tail of the file so the
-    page has immediate context; thereafter we follow new lines as they
-    appear, reopening the file if the rotating handler swaps it out.
+    parses it and renders. On connect we replay only lines from the current
+    server session (anything timestamped at or after ``app.state.session_started_at``),
+    then follow new lines as they appear, reopening the file if the rotating
+    handler swaps it out.
     """
     log_path = Path(config.logging.log_dir) / "energy_orchestrator.log"
+    session_started_at: datetime = request.app.state.session_started_at
     return StreamingResponse(
-        _tail_log_sse(request, log_path),
+        _tail_log_sse(request, log_path, session_started_at),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
 
 
-_INITIAL_TAIL_BYTES = 16 * 1024  # ~100 lines of context on connect
 _POLL_INTERVAL_S = 0.4
 
 
-async def _tail_log_sse(request: Request, log_path: Path) -> AsyncIterator[str]:
+def _line_in_session(line: str, session_started_at: datetime) -> bool:
+    """True if a JSON log line's timestamp is at/after the session start.
+
+    Non-JSON lines or lines without a parseable timestamp are kept (rare —
+    they shouldn't appear in our structured log, and dropping them would hide
+    surprises). Comparison happens in UTC.
+    """
+    try:
+        rec = json.loads(line)
+    except ValueError:
+        return True
+    ts_text = rec.get("timestamp")
+    if not isinstance(ts_text, str):
+        return True
+    try:
+        ts = datetime.fromisoformat(ts_text.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts >= session_started_at
+
+
+async def _tail_log_sse(
+    request: Request, log_path: Path, session_started_at: datetime
+) -> AsyncIterator[str]:
     # Wait for the file to exist (first run before any logs have been written).
     while not log_path.exists():
         if await request.is_disconnected():
@@ -280,20 +307,16 @@ async def _tail_log_sse(request: Request, log_path: Path) -> AsyncIterator[str]:
 
     f = await asyncio.to_thread(open, log_path, "r", encoding="utf-8", errors="replace")
     try:
-        # Seek back ~16 KB so the user lands on recent context, not an empty page.
-        await asyncio.to_thread(f.seek, 0, 2)
-        end = await asyncio.to_thread(f.tell)
-        start = max(0, end - _INITIAL_TAIL_BYTES)
-        await asyncio.to_thread(f.seek, start)
-        if start > 0:
-            await asyncio.to_thread(f.readline)  # discard partial first line
-
+        # Replay from the start, skipping lines older than the current session.
+        # Once we reach EOF we transition to live tailing; new lines necessarily
+        # belong to this session, so the timestamp filter is a no-op from then on.
         while True:
             if await request.is_disconnected():
                 return
             line = await asyncio.to_thread(f.readline)
             if line:
-                yield f"data: {line.rstrip()}\n\n"
+                if _line_in_session(line, session_started_at):
+                    yield f"data: {line.rstrip()}\n\n"
                 continue
 
             # No new data — detect rotation (file shrank or was replaced).

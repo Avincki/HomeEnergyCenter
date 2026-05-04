@@ -117,6 +117,24 @@ def test_form_to_config_allows_blank_optional_secrets_for_csv_provider() -> None
     assert rebuilt.prices.csv_path is not None
 
 
+def test_form_to_config_blank_base_url_becomes_none() -> None:
+    form = config_to_form(_baseline())
+    form["prices.base_url"] = ""
+    rebuilt, errors = form_to_config(form)
+    assert errors == {}
+    assert rebuilt is not None
+    assert rebuilt.prices.base_url is None
+
+
+def test_form_to_config_preserves_custom_base_url() -> None:
+    form = config_to_form(_baseline())
+    form["prices.base_url"] = "https://example.invalid/api"
+    rebuilt, errors = form_to_config(form)
+    assert errors == {}
+    assert rebuilt is not None
+    assert rebuilt.prices.base_url == "https://example.invalid/api"
+
+
 def test_form_to_config_rejects_csv_provider_without_csv_path() -> None:
     form = config_to_form(_baseline())
     form["prices.provider"] = "csv"

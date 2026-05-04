@@ -123,6 +123,11 @@ class PricesConfig(_StrictModel):
         description="2-letter country code (resolved to an EIC) or a raw EIC string",
     )
     csv_path: Path | None = None
+    base_url: str | None = Field(
+        default=None,
+        min_length=1,
+        description="Override the provider's default REST endpoint (entsoe only)",
+    )
     injection_factor: float = Field(default=1.0)
     injection_offset: float = Field(default=0.0, description="EUR/kWh added to derive injection")
 

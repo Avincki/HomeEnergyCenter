@@ -49,6 +49,15 @@ _SECRET_FIELDS: frozenset[str] = frozenset(
     }
 )
 
+# Optional plain-string fields where an empty form input means "use the default"
+# (i.e. None) — without this, Pydantic min_length validators on the model would
+# reject the empty string instead of falling back.
+_OPTIONAL_STRING_FIELDS: frozenset[str] = frozenset(
+    {
+        "prices.base_url",
+    }
+)
+
 
 def config_to_form(config: AppConfig) -> AppConfigForm:
     """Flatten an :class:`AppConfig` into a dotted-key form dict.
@@ -77,7 +86,11 @@ def form_to_config(form: AppConfigForm) -> tuple[AppConfig | None, FormErrors]:
     nested: dict[str, Any] = {}
     for key, raw_value in form.items():
         value: Any = raw_value
-        if value == "" and (key in _SECRET_FIELDS or key in _PATH_FIELDS):
+        if value == "" and (
+            key in _SECRET_FIELDS
+            or key in _PATH_FIELDS
+            or key in _OPTIONAL_STRING_FIELDS
+        ):
             value = None
         _set_nested(nested, key.split("."), value)
 
@@ -217,6 +230,7 @@ def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
             "api_key": _secret_or_none(config.prices.api_key),
             "area": config.prices.area,
             "csv_path": config.prices.csv_path.as_posix() if config.prices.csv_path else None,
+            "base_url": config.prices.base_url,
             "injection_factor": config.prices.injection_factor,
             "injection_offset": config.prices.injection_offset,
         },

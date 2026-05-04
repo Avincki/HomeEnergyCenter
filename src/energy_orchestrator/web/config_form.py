@@ -125,6 +125,11 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                     WebField(
                         "CSV path", "prices.csv_path", hint="only when provider=csv"
                     ),
+                    WebField(
+                        "Base URL",
+                        "prices.base_url",
+                        hint="optional — override the entsoe REST endpoint",
+                    ),
                     WebField("Injection factor", "prices.injection_factor"),
                     WebField("Injection offset (€/kWh)", "prices.injection_offset"),
                 ),

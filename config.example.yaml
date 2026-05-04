@@ -32,6 +32,7 @@ prices:
   injection_factor: 1.0
   injection_offset: 0.0
   # csv_path: data/prices.csv  # only when provider: csv
+  # base_url: https://...      # override entsoe REST endpoint if it changes
 
 decision:
   battery_low_soc_pct: 60

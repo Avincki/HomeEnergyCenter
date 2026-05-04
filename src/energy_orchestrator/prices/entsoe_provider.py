@@ -1,6 +1,6 @@
 """ENTSO-E Transparency Platform day-ahead price provider.
 
-Calls the public REST-XML API at ``https://web-api.tso.entsoe.eu/api`` with
+Calls the public REST-XML API at ``https://web-api.tp.entsoe.eu/api`` with
 ``documentType=A44`` (day-ahead prices). Wholesale prices are quoted in
 EUR/MWh; we convert to EUR/kWh and apply ``injection_factor`` /
 ``injection_offset`` from config to derive the injection price.
@@ -27,7 +27,7 @@ from energy_orchestrator.prices.base import (
     PriceProvider,
 )
 
-_DEFAULT_BASE_URL = "https://web-api.tso.entsoe.eu/api"
+_DEFAULT_BASE_URL = "https://web-api.tp.entsoe.eu/api"
 _DAY_AHEAD_DOC_TYPE = "A44"
 
 # Bidding-zone EIC codes for areas users typically configure as 2-letter codes.

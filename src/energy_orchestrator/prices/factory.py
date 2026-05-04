@@ -11,7 +11,7 @@ def create_price_provider(config: PricesConfig) -> PriceProvider:
     if config.provider is PricesProvider.CSV:
         return CsvPriceProvider(config)
     if config.provider is PricesProvider.ENTSOE:
-        return EntsoePriceProvider(config)
+        return EntsoePriceProvider(config, base_url=config.base_url)
     if config.provider is PricesProvider.TIBBER:
         raise PriceConfigurationError("Tibber provider is not implemented yet — use entsoe or csv")
     raise PriceConfigurationError(f"unknown price provider: {config.provider}")

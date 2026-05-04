@@ -40,6 +40,16 @@
     function renderCombined(canvas, prices, readings) {
         const now = new Date();
 
+        // Lock the x-axis to today's local 00:00 -> 24:00 window.
+        const startOfToday = new Date(now);
+        startOfToday.setHours(0, 0, 0, 0);
+        const endOfToday = new Date(startOfToday);
+        endOfToday.setDate(endOfToday.getDate() + 1);
+        const todayLabel =
+            startOfToday.getFullYear() + "-" +
+            String(startOfToday.getMonth() + 1).padStart(2, "0") + "-" +
+            String(startOfToday.getDate()).padStart(2, "0");
+
         const priceBars = prices.map(p => ({
             x: new Date(p.timestamp).valueOf(),
             y: p.injection_eur_per_kwh,
@@ -119,6 +129,14 @@
                     x: {
                         type: "time",
                         time: { unit: "hour", tooltipFormat: "HH:mm" },
+                        min: startOfToday.valueOf(),
+                        max: endOfToday.valueOf(),
+                        title: {
+                            display: true,
+                            text: todayLabel,
+                            color: TEXT_MUTED,
+                            padding: { top: 6 },
+                        },
                         ticks: { color: TEXT_MUTED, maxRotation: 0, autoSkip: true },
                         grid: { color: "rgba(148, 163, 184, 0.10)" },
                     },

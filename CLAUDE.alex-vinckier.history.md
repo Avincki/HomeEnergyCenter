@@ -704,3 +704,106 @@ next chunk for the iterative config workflow. Beyond that: Phase 13
 (test coverage push, including SSE generator tests now that there's
 an async-streaming endpoint), Phase 14 (mkdocs), and possibly
 vendoring Swagger UI assets if/when offline operation matters.
+
+## 2026-05-04 — ENTSO-E endpoint migration + log viewer scoping fixes
+
+User loaded the dashboard, added their ENTSO-E security token, and saw
+an empty prices graph with `ENTSO-E request failed: Cannot connect to
+host web-api.tso.entsoe.eu:443 ssl:default [getaddrinfo failed]`. Two
+distinct things turned out to be wrong; this session fixed both plus a
+log-viewer ergonomics issue surfaced along the way.
+
+### What landed (commit `e61cb0d`)
+
+- **ENTSO-E hostname migration.** `web-api.tso.entsoe.eu` no longer
+  resolves anywhere — Google DNS (8.8.8.8), Cloudflare (1.1.1.1) and
+  the OS resolver all return NODATA. Confirmed via `nslookup` and
+  `Test-NetConnection`. The Transparency Platform retired that name in
+  favor of `web-api.tp.entsoe.eu` (note `tp`, not `tso`). Verified the
+  new name from two independent sources: a WebSearch survey and the
+  `EnergieID/entsoe-py` library source
+  (`URL = os.getenv("ENTSOE_ENDPOINT_URL") or "https://web-api.tp.entsoe.eu/api"`).
+  Updated `_DEFAULT_BASE_URL` in `prices/entsoe_provider.py` and the
+  module docstring.
+- **`prices.base_url` config field as escape hatch.** Added an
+  optional `str | None` field on `PricesConfig` (`min_length=1`,
+  default `None`). `create_price_provider` threads it into
+  `EntsoePriceProvider(config, base_url=...)`. Surfaced the field in
+  both editors: the web `/config` page (Pricing section) and the
+  tkinter `gui/app.py`. Next migration won't need a code edit.
+- **Binding: `_OPTIONAL_STRING_FIELDS` set.** New third category in
+  `gui/binding.py` beside `_SECRET_FIELDS` / `_PATH_FIELDS`. Empty
+  form input maps to `None` so Pydantic's `min_length=1` doesn't
+  reject the blank. Added two binding tests
+  (`test_form_to_config_blank_base_url_becomes_none`,
+  `test_form_to_config_preserves_custom_base_url`) and a factory test
+  (`test_factory_threads_base_url_into_entsoe_provider`).
+- **Logs page: scope to current server session.** Captured
+  `app.state.session_started_at = datetime.now(UTC)` in the FastAPI
+  lifespan. The SSE stream now replays from the *start* of the active
+  log file and skips any line whose JSON `timestamp` is older than
+  the session start (`_line_in_session` helper). Once we reach EOF
+  the filter is a no-op since new lines necessarily belong to the
+  current session. Replaced the previous 16 KB seek-back, which was
+  cross-session leaky.
+- **Logs page: render timestamps in browser local time.** Old code
+  did `parsed.timestamp.replace('T', ' ').replace('Z', '')` — i.e.
+  rendered UTC as if it were local. New `formatLocalTimestamp` parses
+  via `new Date(...)` and formats `YYYY-MM-DD HH:MM:SS.mmm` from the
+  local-timezone components.
+- **Pre-existing dashboard x-axis lock.** `dashboard.js` had an
+  uncommitted change locking the price chart to today's local
+  00:00–24:00 window with a date title. Carried it into the same
+  commit; called it out in the message rather than splitting.
+
+### Notable diagnostic moments
+
+- **The error wasn't on /logs.** First the user pasted the live log
+  stream, which showed only sonnen / pymodbus warnings and no
+  ENTSO-E line. The reason: `_refresh_prices_if_stale` catches
+  `PriceError` and routes it through `_record_status_error`, which
+  writes to the `source_status` table — visible on `/debug`, not in
+  the rotating log file. So a fetch failure shows up on the Debug
+  page only. Worth surfacing more loudly some day; for now it's
+  documented context.
+- **`/api/prices` returning 200 with `prices: []` is a red herring.**
+  When the price cache is empty (because every fetch failed) the
+  endpoint still returns 200 OK with `last_refresh: null` and an
+  empty list. Status code is no signal of provider health.
+- **`Test-NetConnection` takes a hostname only.** User pasted output
+  with `web-api.tp.entsoe.eu/api` and `https://web-api.tp.entsoe.eu/api`,
+  both resolved as literal hostnames (with slash and scheme), both
+  failed. Once they re-ran with just the host + `-Port 443`, it
+  succeeded against `20.23.37.29`. Worth remembering when triaging
+  the next user.
+- **`nslookup` returning a `Name:` line *without* an `Address:`
+  line means NODATA.** That's how Windows nslookup expresses "the
+  server replied but the host has no A/AAAA record." It's quiet
+  enough that it reads like a successful lookup at first glance.
+
+### State at end-of-session
+
+- Branch `main` at `e61cb0d`, **1 commit ahead of origin**, not
+  pushed yet. 13 files changed (+126 / −20).
+- All 100 unit + integration tests in scope still pass
+  (`tests/unit/test_prices_*`, `test_gui_binding.py`,
+  `test_config_*` and `tests/integration/test_web_app.py`).
+- Untracked files left intentionally: `keys.txt` (flagged to user as
+  likely-secret — needs `.gitignore` confirmation),
+  `config.yaml.bak` (runtime artifact from the editor), and a
+  screenshot the user dropped during the troubleshooting.
+- The price graph renders correctly again post-restart. User asked
+  about the bar colors mid-session: grey = normal hour, cyan
+  (with cyan border) = current local hour, red = negative injection
+  price (`dashboard.js:57-64`).
+
+### Next session
+
+Same backlog as before plus a worthwhile small one: the orchestrator
+swallows `PriceError` into `source_status` only, with no echo to the
+log file. A single `logger.warning("price refresh failed", error=...)`
+in `_refresh_prices_if_stale` would have made today's ENTSO-E
+migration self-diagnosing from `/logs` alone. Otherwise: hot-reload
+on config save (still highest leverage), Phase 13 (test coverage,
+including SSE generator tests), Phase 14 (mkdocs), Swagger UI
+vendoring if offline operation matters.

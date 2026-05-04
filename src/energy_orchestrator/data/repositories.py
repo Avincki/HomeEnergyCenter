@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, Generic, TypeVar, cast
 
-from sqlalchemy import CursorResult, delete, select
+from sqlalchemy import CursorResult, delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from energy_orchestrator.data.models import Base, Decision, Reading, SourceStatus
@@ -104,3 +104,16 @@ class SourceStatusRepository(BaseRepository[SourceStatus]):
         status.updated_at = now
         await self._session.flush()
         return status
+
+    async def clear_all_errors(self) -> int:
+        """Null out ``last_error_at`` and ``last_error_message`` for every
+        source. Used by the debug board's "Clear errors" action so old
+        failures (already-recovered) stop displaying alongside the current
+        state. Returns the number of rows affected."""
+        stmt = update(SourceStatus).values(
+            last_error_at=None,
+            last_error_message=None,
+        )
+        result = cast(CursorResult[Any], await self._session.execute(stmt))
+        await self._session.flush()
+        return result.rowcount or 0

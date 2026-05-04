@@ -71,6 +71,12 @@ def config_to_form(config: AppConfig) -> AppConfigForm:
     # ``solar: ""`` and form_to_config would feed that back to Pydantic,
     # which rejects empty-string-as-SolarConfig.
     nested.pop("solar", None)
+    # Same treatment for optional nested sub-sections — a None value would
+    # become a stray ``homewizard.large_solar: ""`` form key that Pydantic
+    # would later reject as not-a-LargeSolarConfig.
+    hw = nested.get("homewizard")
+    if isinstance(hw, dict) and hw.get("large_solar") is None:
+        hw.pop("large_solar", None)
     flat: AppConfigForm = {}
     _flatten(nested, prefix=(), out=flat)
     # model_dump leaves SecretStr as objects — unwrap.
@@ -103,6 +109,18 @@ def form_to_config(
         ):
             value = None
         _set_nested(nested, key.split("."), value)
+
+    # Optional sub-section: drop the whole large_solar subsection if the user
+    # left ``host`` blank (or the placeholder slipped through from a stale
+    # form serializer as a non-dict). Otherwise Pydantic would try to
+    # validate empty strings against the required fields and reject them.
+    hw = nested.get("homewizard")
+    if isinstance(hw, dict):
+        ls = hw.get("large_solar")
+        if not isinstance(ls, dict):
+            hw["large_solar"] = None
+        elif not str(ls.get("host", "")).strip():
+            hw["large_solar"] = None
 
     if baseline is not None and baseline.solar is not None and "solar" not in nested:
         # Preserve the YAML-only solar section through web-form saves.
@@ -221,6 +239,7 @@ def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
     """Walk AppConfig manually so SecretStr/Path/Enum get correct shapes."""
     out: dict[str, Any] = {
         "poll_interval_s": config.poll_interval_s,
+        "decision_interval_s": config.decision_interval_s,
         "sonnen": {
             "host": config.sonnen.host,
             "port": config.sonnen.port,
@@ -249,6 +268,17 @@ def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
                 "retry_count": config.homewizard.small_solar.retry_count,
                 "peak_w": config.homewizard.small_solar.peak_w,
             },
+            "large_solar": (
+                None
+                if config.homewizard.large_solar is None
+                else {
+                    "host": config.homewizard.large_solar.host,
+                    "port": config.homewizard.large_solar.port,
+                    "timeout_s": config.homewizard.large_solar.timeout_s,
+                    "retry_count": config.homewizard.large_solar.retry_count,
+                    "peak_w": config.homewizard.large_solar.peak_w,
+                }
+            ),
         },
         "solaredge": {
             "host": config.solaredge.host,

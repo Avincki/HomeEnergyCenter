@@ -5,10 +5,17 @@ Every ``poll_interval_s`` the loop:
      SolarEdge limit register).
   2. Refreshes the price cache from the configured provider when stale.
   3. Persists a ``Reading`` row capturing whatever data made it through.
+
+Once per ``decision_interval_s`` (gated on the loop's own clock) the same tick
+also:
   4. If battery SoC is available, builds a ``TickContext`` and runs the
      decision engine; persists the resulting ``Decision`` row.
   5. If ``decision.dry_run`` is false and the state changed, actuates the
      SolarEdge active-power-limit register (0 % for OFF, 100 % for ON).
+
+That decoupling lets the dashboard see fresh ``Reading`` rows at the poll
+cadence while keeping decision evaluation (and any inverter writes) on a
+slower, less-chatty cadence.
 
 Per-source success/error is recorded against ``SourceStatus`` so the debug
 board's health panel reflects what the loop is actually seeing.
@@ -62,9 +69,13 @@ logger = structlog.stdlib.get_logger(__name__)
 _OFF_PCT = 0
 _ON_PCT = 100
 
-# Price-fetch window: from start of today UTC through end of tomorrow, so the
-# decision engine and the dashboard both see today + tomorrow.
-_PRICE_LOOKAHEAD = timedelta(days=2)
+# Price-fetch window: yesterday + today + tomorrow (UTC). We pull yesterday
+# too because the dashboard renders prices on a local-time x-axis: in any
+# timezone east of UTC, the first hours of "today, local" map to UTC slots
+# in yesterday's date, so without those we'd leave a gap at the start of
+# the chart. Three days covers any TZ within ±24 h.
+_PRICE_PAST_DAYS = timedelta(days=1)
+_PRICE_FUTURE_DAYS = timedelta(days=2)
 
 
 class TickLoop:
@@ -93,6 +104,13 @@ class TickLoop:
         self._car_charger = create_device_client(config.homewizard.car_charger)
         self._p1_meter = create_device_client(config.homewizard.p1_meter)
         self._small_solar = create_device_client(config.homewizard.small_solar)
+        # Optional second HomeWizard kWh meter — None when the user has no
+        # ``homewizard.large_solar`` section in config.
+        self._large_solar: DeviceClient[Any] | None = (
+            create_device_client(config.homewizard.large_solar)
+            if config.homewizard.large_solar is not None
+            else None
+        )
         solaredge = create_device_client(config.solaredge)
         if not isinstance(solaredge, SolarEdgeClient):
             raise TypeError(
@@ -108,6 +126,10 @@ class TickLoop:
 
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
+        # Gates the decision/actuation block — None means "fire on the very
+        # next tick", which gives us a decision immediately on startup rather
+        # than waiting a full decision_interval_s.
+        self._last_decision_at: datetime | None = None
 
     # ----- lifecycle ----------------------------------------------------------
 
@@ -126,13 +148,15 @@ class TickLoop:
         await self._close_resources()
 
     async def _close_resources(self) -> None:
-        clients: tuple[DeviceClient[Any], ...] = (
+        clients: list[DeviceClient[Any]] = [
             self._sonnen,
             self._car_charger,
             self._p1_meter,
             self._small_solar,
             self._solaredge,
-        )
+        ]
+        if self._large_solar is not None:
+            clients.append(self._large_solar)
         for client in clients:
             with contextlib.suppress(Exception):
                 await client.close()
@@ -168,67 +192,90 @@ class TickLoop:
         # Bind tick_at so every log line emitted during this tick (including
         # nested helpers) carries the same timestamp.
         with structlog.contextvars.bound_contextvars(tick_at=when.isoformat()):
-            sonnen_r, car_r, p1_r, small_r, _solar_r = await asyncio.gather(
+            sonnen_r, car_r, p1_r, small_r, _solar_r, large_r = await asyncio.gather(
                 self._read_one(self._sonnen),
                 self._read_one(self._car_charger),
                 self._read_one(self._p1_meter),
                 self._read_one(self._small_solar),
                 self._read_one(self._solaredge),
+                self._read_optional(self._large_solar),
             )
 
             await self._refresh_prices_if_stale(when)
             await self._refresh_solar_if_stale(when)
             current_price = get_current_hour_price(self._price_cache.points(), when)
 
-            reading = self._build_reading(when, sonnen_r, car_r, p1_r, small_r, current_price)
+            reading = self._build_reading(
+                when, sonnen_r, car_r, p1_r, small_r, large_r, current_price
+            )
             decision: Decision | None = None
 
-            soc = sonnen_r.data.get("soc_pct") if sonnen_r is not None else None
-            if soc is None:
-                # Skip the decision step — spec says missing essential data must
-                # not reach the engine. We still persist the partial reading so
-                # the debug board reflects what we did manage to read.
-                logger.warning("tick skipped decision: sonnen SoC unavailable")
-            else:
-                previous_state = await self._fetch_previous_state()
-                ctx = TickContext(
-                    timestamp=when,
-                    battery_soc_pct=float(soc),
-                    car_is_charging=self._car_is_charging(car_r),
-                    small_solar_w=self._small_solar_w(small_r),
-                    prices=self._price_cache.points(),
-                    previous_state=previous_state,
-                    battery_capacity_kwh=self.config.sonnen.capacity_kwh,
-                    override=self._override_controller.get_active(when),
-                )
-                record = self._engine.decide(ctx)
-                decision = Decision(
-                    timestamp=record.timestamp,
-                    state=record.state.value,
-                    rule_fired=record.rule_fired,
-                    reason=record.reason,
-                    state_changed=record.state_changed,
-                    manual_override=record.manual_override,
-                    override_mode=(
-                        record.override_mode.value if record.override_mode is not None else None
-                    ),
-                    forecast_end_soc_pct=record.forecast_end_soc_pct,
-                )
-
-                if record.state_changed:
-                    logger.info(
-                        "decision state changed",
-                        state=record.state.value,
-                        rule=record.rule_fired,
-                        manual_override=record.manual_override,
+            if self._should_decide(when):
+                soc = sonnen_r.data.get("soc_pct") if sonnen_r is not None else None
+                if soc is None:
+                    # Skip the decision step — spec says missing essential data
+                    # must not reach the engine. We still persist the partial
+                    # reading so the debug board reflects what we did manage to
+                    # read. Don't advance _last_decision_at — we want to retry
+                    # on the next poll, not wait a full decision_interval_s.
+                    logger.warning("tick skipped decision: sonnen SoC unavailable")
+                else:
+                    previous_state = await self._fetch_previous_state()
+                    ctx = TickContext(
+                        timestamp=when,
+                        battery_soc_pct=float(soc),
+                        car_is_charging=self._car_is_charging(car_r),
+                        small_solar_w=self._small_solar_w(small_r),
+                        prices=self._price_cache.points(),
+                        previous_state=previous_state,
+                        battery_capacity_kwh=self.config.sonnen.capacity_kwh,
+                        override=self._override_controller.get_active(when),
                     )
+                    record = self._engine.decide(ctx)
+                    decision = Decision(
+                        timestamp=record.timestamp,
+                        state=record.state.value,
+                        rule_fired=record.rule_fired,
+                        reason=record.reason,
+                        state_changed=record.state_changed,
+                        manual_override=record.manual_override,
+                        override_mode=(
+                            record.override_mode.value if record.override_mode is not None else None
+                        ),
+                        forecast_end_soc_pct=record.forecast_end_soc_pct,
+                    )
+                    self._last_decision_at = when
 
-                if not self.config.decision.dry_run and record.state_changed:
-                    await self._actuate_solaredge(record.state)
+                    if record.state_changed:
+                        logger.info(
+                            "decision state changed",
+                            state=record.state.value,
+                            rule=record.rule_fired,
+                            manual_override=record.manual_override,
+                        )
+
+                    if not self.config.decision.dry_run and record.state_changed:
+                        await self._actuate_solaredge(record.state)
 
             await self._persist(reading, decision)
 
     # ----- helpers ------------------------------------------------------------
+
+    def _should_decide(self, when: datetime) -> bool:
+        """True on the first tick or when at least ``decision_interval_s``
+        has elapsed since the last decision actually fired."""
+        if self._last_decision_at is None:
+            return True
+        elapsed = (when - self._last_decision_at).total_seconds()
+        return elapsed >= self.config.decision_interval_s
+
+    async def _read_optional(
+        self, client: DeviceClient[Any] | None
+    ) -> DeviceReading | None:
+        """Same as _read_one but no-ops if the client is unconfigured."""
+        if client is None:
+            return None
+        return await self._read_one(client)
 
     async def _read_one(self, client: DeviceClient[Any]) -> DeviceReading | None:
         try:
@@ -248,8 +295,9 @@ class TickLoop:
     async def _refresh_prices_if_stale(self, now: datetime) -> None:
         if not self._price_cache.is_stale(now):
             return
-        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-        end = start + _PRICE_LOOKAHEAD
+        today_utc_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        start = today_utc_midnight - _PRICE_PAST_DAYS
+        end = today_utc_midnight + _PRICE_FUTURE_DAYS
         try:
             points = await self._price_provider.fetch_prices(start, end)
         except PriceError as e:
@@ -344,6 +392,7 @@ class TickLoop:
         car: DeviceReading | None,
         p1: DeviceReading | None,
         small: DeviceReading | None,
+        large: DeviceReading | None,
         price: PricePoint | None,
     ) -> Reading:
         sonnen_data = sonnen.data if sonnen is not None else {}
@@ -358,6 +407,9 @@ class TickLoop:
             p1_active_power_w=_as_float(p1.data.get("active_power_w")) if p1 is not None else None,
             small_solar_w=(
                 _as_float(small.data.get("active_power_w")) if small is not None else None
+            ),
+            large_solar_w=(
+                _as_float(large.data.get("active_power_w")) if large is not None else None
             ),
             injection_price_eur_per_kwh=(
                 price.injection_eur_per_kwh if price is not None else None

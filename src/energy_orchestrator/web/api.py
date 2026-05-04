@@ -66,11 +66,27 @@ class OverrideRequest(BaseModel):
 # ----- serializers -------------------------------------------------------------
 
 
+def _utc_aware(dt: datetime | None) -> datetime | None:
+    """Re-attach UTC to a naive datetime — SQLite drops tzinfo on round-trip
+    even with ``DateTime(timezone=True)``. All our timestamps are stored UTC."""
+    if dt is None:
+        return None
+    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+
+
+def _iso_utc(dt: datetime | None) -> str | None:
+    """ISO-8601 with explicit UTC offset, so JS ``new Date(...)`` parses it
+    as UTC instead of local. SQLite drops tzinfo on round-trip, so we re-attach
+    UTC before serializing — any naive datetime here is a UTC instant."""
+    aware = _utc_aware(dt)
+    return aware.isoformat() if aware else None
+
+
 def _reading_to_dict(r: Reading | None) -> dict[str, Any] | None:
     if r is None:
         return None
     return {
-        "timestamp": r.timestamp.isoformat(),
+        "timestamp": _iso_utc(r.timestamp),
         "battery_soc_pct": r.battery_soc_pct,
         "battery_power_w": r.battery_power_w,
         "house_consumption_w": r.house_consumption_w,
@@ -79,6 +95,7 @@ def _reading_to_dict(r: Reading | None) -> dict[str, Any] | None:
         "car_charger_w": r.car_charger_w,
         "p1_active_power_w": r.p1_active_power_w,
         "small_solar_w": r.small_solar_w,
+        "large_solar_w": r.large_solar_w,
         "injection_price_eur_per_kwh": r.injection_price_eur_per_kwh,
         "consumption_price_eur_per_kwh": r.consumption_price_eur_per_kwh,
     }
@@ -88,7 +105,7 @@ def _decision_to_dict(d: Decision | None) -> dict[str, Any] | None:
     if d is None:
         return None
     return {
-        "timestamp": d.timestamp.isoformat(),
+        "timestamp": _iso_utc(d.timestamp),
         "state": d.state,
         "rule_fired": d.rule_fired,
         "reason": d.reason,
@@ -102,11 +119,11 @@ def _decision_to_dict(d: Decision | None) -> dict[str, Any] | None:
 def _source_to_dict(s: SourceStatus) -> dict[str, Any]:
     return {
         "source_name": s.source_name,
-        "last_success_at": s.last_success_at.isoformat() if s.last_success_at else None,
-        "last_error_at": s.last_error_at.isoformat() if s.last_error_at else None,
+        "last_success_at": _iso_utc(s.last_success_at),
+        "last_error_at": _iso_utc(s.last_error_at),
         "last_error_message": s.last_error_message,
         "last_payload": s.last_payload,
-        "updated_at": s.updated_at.isoformat(),
+        "updated_at": _iso_utc(s.updated_at),
     }
 
 
@@ -116,33 +133,41 @@ def _override_to_dict(controller: OverrideController) -> dict[str, Any]:
         return {"mode": OverrideMode.AUTO.value, "expires_at": None}
     return {
         "mode": state.mode.value,
-        "expires_at": state.expires_at.isoformat() if state.expires_at else None,
+        "expires_at": _iso_utc(state.expires_at),
     }
 
 
-def _utc_aware(dt: datetime | None) -> datetime | None:
-    """Re-attach UTC to a naive datetime — SQLite drops tzinfo on round-trip
-    even with ``DateTime(timezone=True)``. All our timestamps are stored UTC."""
-    if dt is None:
-        return None
-    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
-
-
 def _classify_source_status(s: SourceStatus, now: datetime) -> str:
-    """Return one of: OK / DEGRADED / ERROR / UNKNOWN."""
+    """Return one of: OK / DEGRADED / ERROR / UNKNOWN.
+
+    Whichever event (success or error) is more recent reflects the current
+    state — a successful read after a recent error clears the ERROR badge,
+    rather than holding it for a fixed cooldown.
+    """
     last_success = _utc_aware(s.last_success_at)
     last_error = _utc_aware(s.last_error_at)
     if last_success is None and last_error is None:
         return "UNKNOWN"
-    last_success_age = (now - last_success) if last_success else None
-    last_error_age = (now - last_error) if last_error else None
-    if last_error_age is not None and last_error_age <= _OK_THRESHOLD:
+
+    success_is_latest = last_success is not None and (
+        last_error is None or last_success >= last_error
+    )
+
+    if success_is_latest:
+        assert last_success is not None
+        age = now - last_success
+        if age <= _OK_THRESHOLD:
+            return "OK"
+        if age <= _DEGRADED_THRESHOLD:
+            return "DEGRADED"
         return "ERROR"
-    if last_success_age is None or last_success_age > _DEGRADED_THRESHOLD:
-        return "ERROR" if last_error_age is not None else "UNKNOWN"
-    if last_success_age <= _OK_THRESHOLD:
-        return "OK"
-    return "DEGRADED"
+
+    # Most recent event is an error.
+    assert last_error is not None
+    err_age = now - last_error
+    if err_age <= _DEGRADED_THRESHOLD:
+        return "ERROR"
+    return "UNKNOWN"
 
 
 # ----- routes ------------------------------------------------------------------
@@ -211,8 +236,8 @@ async def get_health(config: ConfigDep, uow: UowDep) -> dict[str, Any]:
             {
                 "source_name": name,
                 "status": status,
-                "last_success_at": row.last_success_at.isoformat() if row.last_success_at else None,
-                "last_error_at": row.last_error_at.isoformat() if row.last_error_at else None,
+                "last_success_at": _iso_utc(row.last_success_at),
+                "last_error_at": _iso_utc(row.last_error_at),
                 "last_error_message": row.last_error_message,
             }
         )
@@ -227,15 +252,23 @@ async def get_health(config: ConfigDep, uow: UowDep) -> dict[str, Any]:
 
 @router.get("/prices")
 async def get_prices(price_cache: PriceCacheDep) -> dict[str, Any]:
-    """Return cached day-ahead price points covering today + tomorrow (UTC).
+    """Return cached day-ahead price points covering yesterday + today +
+    tomorrow (UTC).
+
+    The dashboard chart renders bars on a local-time x-axis. East of UTC, the
+    first local-today hours sit in yesterday's UTC date, so we widen the
+    window by a day backwards to keep the chart fully populated. The chart
+    clips bars outside its visible range; consumers that want a tighter
+    window can filter client-side.
 
     The cache is populated by the orchestrator tick loop. Until the loop has
     produced a successful fetch, ``prices`` is an empty list and
     ``last_refresh`` is ``null``.
     """
     now = datetime.now(UTC)
-    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    end = start + timedelta(days=2)
+    today_utc_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    start = today_utc_midnight - timedelta(days=1)
+    end = today_utc_midnight + timedelta(days=2)
     points = price_cache.points_in_range(start, end)
     return {
         "last_refresh": (
@@ -390,6 +423,20 @@ async def _tail_log_sse(
             await asyncio.sleep(_POLL_INTERVAL_S)
     finally:
         await asyncio.to_thread(f.close)
+
+
+@router.post("/source-status/clear-errors")
+async def clear_source_errors(uow: UowDep) -> dict[str, Any]:
+    """Null out ``last_error_at`` + ``last_error_message`` on every source row.
+
+    Used by the debug board's "Clear errors" button so stale failures stop
+    cluttering the source-health table. The next failed tick will repopulate
+    the columns; this is purely an acknowledge-and-clear action.
+    """
+    async with uow:
+        rows = await uow.source_status.clear_all_errors()
+        await uow.commit()
+    return {"cleared": rows}
 
 
 @router.post("/override")

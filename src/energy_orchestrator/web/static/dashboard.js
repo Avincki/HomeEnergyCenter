@@ -1,6 +1,10 @@
 /* Dashboard chart: day-ahead injection-price bars + battery SoC line on
  * one canvas with dual axes. Reads /api/prices and /api/history?h=24.
  * No CDN — the orchestrator runs on a home LAN, so all assets ship locally.
+ *
+ * After initial render, polls /api/state + /api/history + /api/prices +
+ * /api/solar every REFRESH_MS to update tiles, state card, recent-decisions
+ * table, and chart datasets without reloading the page.
  */
 (() => {
     "use strict";
@@ -9,12 +13,25 @@
     const COLOR_MUTED = "rgba(148, 163, 184, 0.55)";
     const COLOR_NEG = "rgba(239, 68, 68, 0.75)";
     const COLOR_CURRENT = "rgba(56, 189, 248, 0.85)";
-    const COLOR_SOC = "#22c55e";
+    // SoC: brighter green-400 instead of green-500 — pops against the muted
+    // gray price bars and the translucent orange solar fill.
+    const COLOR_SOC = "#4ade80";
+    // Halo drawn underneath the SoC line so it stays legible where it crosses
+    // bars or the solar fill.
+    const COLOR_SOC_HALO = "rgba(2, 6, 23, 0.85)";
     const COLOR_SOLAR_FILL = "rgba(251, 146, 60, 0.30)";
     const COLOR_SOLAR_LINE = "rgba(251, 146, 60, 0.85)";
+    // Measured total solar (small + large): yellow-300, distinct from the
+    // orange forecast and the green SoC line; same dark halo treatment as
+    // SoC for legibility against the price bars.
+    const COLOR_TOTAL_SOLAR = "#fde047";
     const TEXT_MUTED = "#94a3b8";
     const TEXT_BODY = "#e2e8f0";
     const GRID_FAINT = "rgba(148, 163, 184, 0.15)";
+
+    const REFRESH_MS = 5000;
+
+    let chart = null;
 
     function currentHourMatches(iso, now) {
         const d = new Date(iso);
@@ -39,18 +56,81 @@
         parent.replaceChild(note, canvas);
     }
 
-    function renderCombined(canvas, prices, readings, solarPoints) {
-        const now = new Date();
+    function pad2(n) { return String(n).padStart(2, "0"); }
 
-        // Lock the x-axis to today's local 00:00 -> 24:00 window.
-        const startOfToday = new Date(now);
-        startOfToday.setHours(0, 0, 0, 0);
-        const endOfToday = new Date(startOfToday);
-        endOfToday.setDate(endOfToday.getDate() + 1);
-        const todayLabel =
-            startOfToday.getFullYear() + "-" +
-            String(startOfToday.getMonth() + 1).padStart(2, "0") + "-" +
-            String(startOfToday.getDate()).padStart(2, "0");
+    function fmtTimeFull(iso) {
+        if (!iso) return "";
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return String(iso);
+        return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
+               `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+    }
+
+    function fmtTimeShort(iso) {
+        if (!iso) return "";
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return String(iso);
+        return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+    }
+
+    function fmtTimeHM(iso) {
+        if (!iso) return "";
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return String(iso);
+        return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+    }
+
+    function escapeHtml(s) {
+        return String(s).replace(/[&<>"']/g, (c) => ({
+            "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+        }[c]));
+    }
+
+    function setText(id, value) {
+        const el = document.getElementById(id);
+        if (el) el.textContent = value;
+    }
+
+    function setHidden(id, hidden) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        if (hidden) el.setAttribute("hidden", "");
+        else el.removeAttribute("hidden");
+    }
+
+    function fmtNum(v, digits, suffix) {
+        return (v === null || v === undefined)
+            ? "—"
+            : v.toFixed(digits) + (suffix || "");
+    }
+
+    function fmtInt(v, suffix) {
+        return (v === null || v === undefined)
+            ? "—"
+            : Math.round(v) + (suffix || "");
+    }
+
+    // Solar tile populates three cells: small / large / total. Inputs are
+    // raw API values (sign convention: negative = generating); each cell
+    // flips the sign so positive = generating, like the other tiles. Total
+    // falls back to whichever single value is present when one meter is
+    // missing or the device is unconfigured.
+    function applySolarTile(smallRaw, largeRaw) {
+        const s = smallRaw == null ? null : -smallRaw;
+        const l = largeRaw == null ? null : -largeRaw;
+        const fmt = (v) => v == null ? "—" : Math.round(v) + " W";
+        let total;
+        if (s != null && l != null) total = s + l;
+        else if (s != null) total = s;
+        else if (l != null) total = l;
+        else total = null;
+        setText("tile-solar-small", fmt(s));
+        setText("tile-solar-large", fmt(l));
+        setText("tile-solar-total", fmt(total));
+    }
+
+    function buildChartData(prices, readings, solarPoints) {
+        const now = new Date();
 
         const priceBars = prices.map(p => ({
             x: new Date(p.timestamp).valueOf(),
@@ -77,6 +157,41 @@
             y: p.watts / 1000.0,  // chart axis is in kW for readable numbers
         }));
 
+        // Measured total solar = small + large (with the same sign flip used
+        // by the tile so positive = generating). Drop points where neither
+        // meter reported anything; spanGaps reconnects the line.
+        const totalSolarLine = readings
+            .map(r => {
+                const s = r.small_solar_w == null ? null : -r.small_solar_w;
+                const l = r.large_solar_w == null ? null : -r.large_solar_w;
+                let total;
+                if (s != null && l != null) total = s + l;
+                else if (s != null) total = s;
+                else if (l != null) total = l;
+                else return null;
+                return { x: new Date(r.timestamp).valueOf(), y: total / 1000.0 };
+            })
+            .filter(p => p !== null);
+
+        return { priceBars, priceColors, priceBorders, socLine, solarLine, totalSolarLine };
+    }
+
+    function renderCombined(canvas, prices, readings, solarPoints) {
+        const now = new Date();
+
+        // Lock the x-axis to today's local 00:00 -> 24:00 window.
+        const startOfToday = new Date(now);
+        startOfToday.setHours(0, 0, 0, 0);
+        const endOfToday = new Date(startOfToday);
+        endOfToday.setDate(endOfToday.getDate() + 1);
+        const todayLabel =
+            startOfToday.getFullYear() + "-" +
+            String(startOfToday.getMonth() + 1).padStart(2, "0") + "-" +
+            String(startOfToday.getDate()).padStart(2, "0");
+
+        const { priceBars, priceColors, priceBorders, socLine, solarLine, totalSolarLine } =
+            buildChartData(prices, readings, solarPoints);
+
         return new Chart(canvas, {
             data: {
                 datasets: [
@@ -90,7 +205,7 @@
                         yAxisID: "yPrice",
                         // 1 hour wide — matches the price-point hour resolution.
                         barThickness: "flex",
-                        order: 3,
+                        order: 5,
                     },
                     {
                         type: "line",
@@ -104,7 +219,46 @@
                         fill: "origin",
                         spanGaps: true,
                         yAxisID: "ySolar",
+                        order: 4,
+                    },
+                    {
+                        // Dark halo drawn behind the total-solar line for contrast.
+                        type: "line",
+                        label: "_total_solar_halo",
+                        data: totalSolarLine,
+                        borderColor: COLOR_SOC_HALO,
+                        borderWidth: 6,
+                        pointRadius: 0,
+                        tension: 0.2,
+                        spanGaps: true,
+                        yAxisID: "ySolar",
+                        order: 3,
+                    },
+                    {
+                        type: "line",
+                        label: "Total solar (kW)",
+                        data: totalSolarLine,
+                        borderColor: COLOR_TOTAL_SOLAR,
+                        backgroundColor: COLOR_TOTAL_SOLAR,
+                        borderWidth: 3,
+                        pointRadius: 0,
+                        tension: 0.2,
+                        spanGaps: true,
+                        yAxisID: "ySolar",
                         order: 2,
+                    },
+                    {
+                        // Dark halo drawn behind the SoC line for contrast.
+                        type: "line",
+                        label: "_soc_halo",
+                        data: socLine,
+                        borderColor: COLOR_SOC_HALO,
+                        borderWidth: 6,
+                        pointRadius: 0,
+                        tension: 0.2,
+                        spanGaps: true,
+                        yAxisID: "ySoc",
+                        order: 1,
                     },
                     {
                         type: "line",
@@ -112,12 +266,12 @@
                         data: socLine,
                         borderColor: COLOR_SOC,
                         backgroundColor: COLOR_SOC,
-                        borderWidth: 2,
+                        borderWidth: 3,
                         pointRadius: 0,
                         tension: 0.2,
                         spanGaps: true,
                         yAxisID: "ySoc",
-                        order: 1,
+                        order: 0,
                     },
                 ],
             },
@@ -126,8 +280,16 @@
                 maintainAspectRatio: false,
                 interaction: { mode: "nearest", axis: "x", intersect: false },
                 plugins: {
-                    legend: { labels: { color: TEXT_BODY } },
+                    legend: {
+                        labels: {
+                            color: TEXT_BODY,
+                            // Hide internal "_"-prefixed datasets (e.g. SoC halo).
+                            filter: (item) => !String(item.text).startsWith("_"),
+                        },
+                    },
                     tooltip: {
+                        // Same suppression for tooltip lines.
+                        filter: (item) => !String(item.dataset.label || "").startsWith("_"),
                         callbacks: {
                             title: (items) => {
                                 const d = new Date(items[0].parsed.x);
@@ -142,7 +304,8 @@
                                     return `Injection ${ctx.parsed.y.toFixed(4)} €/kWh`;
                                 }
                                 if (ctx.dataset.yAxisID === "ySolar") {
-                                    return `Solar ${ctx.parsed.y.toFixed(2)} kW`;
+                                    const name = ctx.dataset.label.replace(/ \(kW\)$/, "");
+                                    return `${name} ${ctx.parsed.y.toFixed(2)} kW`;
                                 }
                                 return `SoC ${ctx.parsed.y.toFixed(1)} %`;
                             },
@@ -188,6 +351,156 @@
                 },
             },
         });
+    }
+
+    function updateChart(prices, readings, solarPoints) {
+        if (!chart) return;
+        const { priceBars, priceColors, priceBorders, socLine, solarLine, totalSolarLine } =
+            buildChartData(prices, readings, solarPoints);
+        // Datasets:
+        //   0 = price bars
+        //   1 = forecast solar (filled)
+        //   2 = total-solar halo
+        //   3 = total-solar line
+        //   4 = SoC halo
+        //   5 = SoC line
+        chart.data.datasets[0].data = priceBars;
+        chart.data.datasets[0].backgroundColor = priceColors;
+        chart.data.datasets[0].borderColor = priceBorders;
+        chart.data.datasets[1].data = solarLine;
+        chart.data.datasets[2].data = totalSolarLine;
+        chart.data.datasets[3].data = totalSolarLine;
+        chart.data.datasets[4].data = socLine;
+        chart.data.datasets[5].data = socLine;
+        chart.update("none");
+    }
+
+    function applyState(state) {
+        const reading = state.reading || {};
+        const decision = state.decision;
+        const override = state.override || { mode: "auto", expires_at: null };
+
+        // Display-side sign flip — the API's storage convention is unchanged
+        // (battery_power_w positive = discharging, grid_feed_in_w positive =
+        // exporting), but the dashboard tiles render the inverse so positive
+        // means: charging / generating / importing from grid.
+        const neg = (v) => (v == null ? null : -v);
+        setText("tile-soc", reading.battery_soc_pct != null
+            ? reading.battery_soc_pct.toFixed(1) + "%" : "—");
+        setText("tile-batt-power", fmtInt(neg(reading.battery_power_w), " W"));
+        setText("tile-house", fmtInt(reading.house_consumption_w, " W"));
+        setText("tile-car", fmtInt(reading.car_charger_w, " W"));
+        applySolarTile(reading.small_solar_w, reading.large_solar_w);
+        setText("tile-grid", fmtInt(neg(reading.grid_feed_in_w), " W"));
+        setText("tile-inj-price", fmtNum(reading.injection_price_eur_per_kwh, 4, " €/kWh"));
+        setText("tile-override", (override.mode || "auto").toUpperCase());
+
+        const overrideUntil = document.getElementById("tile-override-until");
+        if (overrideUntil) {
+            if (override.expires_at) {
+                overrideUntil.textContent = "until " + fmtTimeHM(override.expires_at);
+                overrideUntil.removeAttribute("hidden");
+            } else {
+                overrideUntil.setAttribute("hidden", "");
+            }
+        }
+
+        const card = document.getElementById("state-card");
+        if (card) {
+            card.classList.remove("state-on", "state-off", "state-unknown");
+            const cls = decision && decision.state === "on" ? "state-on"
+                : decision && decision.state === "off" ? "state-off" : "state-unknown";
+            card.classList.add(cls);
+        }
+        if (decision) {
+            setHidden("state-empty-headline", true);
+            setHidden("state-headline", false);
+            setHidden("state-rule", false);
+            setHidden("state-when", false);
+            setText("state-text", String(decision.state || "").toUpperCase());
+            setText("state-rule", decision.rule_fired || "");
+            setText("state-reason", decision.reason || "");
+            setText("state-when", "decided " + fmtTimeFull(decision.timestamp));
+        } else {
+            setHidden("state-empty-headline", false);
+            setHidden("state-headline", true);
+            setHidden("state-rule", true);
+            setHidden("state-when", true);
+            setText("state-reason",
+                "The orchestrator tick loop hasn't produced a decision — " +
+                "populate config.yaml and start the service.");
+        }
+
+        const flag = document.getElementById("state-override-flag");
+        if (flag) {
+            const active = override.mode && override.mode !== "auto";
+            if (active) {
+                setText("state-override-mode", override.mode);
+                flag.removeAttribute("hidden");
+            } else {
+                flag.setAttribute("hidden", "");
+            }
+        }
+    }
+
+    function applyHistory(history) {
+        const decisions = (history.decisions || []).slice(-20).reverse();
+        const body = document.getElementById("recent-decisions-body");
+        const table = document.getElementById("recent-decisions-table");
+        const empty = document.getElementById("recent-decisions-empty");
+        if (!body) return;
+
+        if (decisions.length === 0) {
+            body.innerHTML = "";
+            if (table) table.setAttribute("hidden", "");
+            if (empty) empty.removeAttribute("hidden");
+            return;
+        }
+
+        body.innerHTML = decisions.map(d => {
+            const overrideCell = d.manual_override
+                ? escapeHtml(d.override_mode || "")
+                : "&mdash;";
+            return `<tr>
+                <td>${escapeHtml(fmtTimeShort(d.timestamp))}</td>
+                <td><span class="badge badge-${escapeHtml(d.state || "")}">${escapeHtml(d.state || "")}</span></td>
+                <td>${escapeHtml(d.rule_fired || "")}</td>
+                <td class="reason">${escapeHtml(d.reason || "")}</td>
+                <td>${overrideCell}</td>
+            </tr>`;
+        }).join("");
+        if (table) table.removeAttribute("hidden");
+        if (empty) empty.setAttribute("hidden", "");
+    }
+
+    function applySolarToday(solarJson) {
+        const wh = solarJson && solarJson.watt_hours_today;
+        setText("tile-solar-today",
+            wh != null ? (wh / 1000.0).toFixed(1) + " kWh" : "—");
+    }
+
+    async function refreshAll() {
+        try {
+            const [state, history, priceJson, solarJson] = await Promise.all([
+                fetchJson("/api/state"),
+                fetchJson("/api/history?h=24"),
+                fetchJson("/api/prices"),
+                fetchJson("/api/solar"),
+            ]);
+            applyState(state);
+            applyHistory(history);
+            applySolarToday(solarJson);
+            updateChart(priceJson.prices || [], history.readings || [],
+                        (solarJson && solarJson.points) || []);
+            const status = document.getElementById("dashboard-refresh-status");
+            if (status) {
+                status.textContent = `Live — last refresh ${fmtTimeShort(new Date().toISOString())}.`;
+            }
+        } catch (e) {
+            console.warn("Dashboard refresh failed", e);
+            const status = document.getElementById("dashboard-refresh-status");
+            if (status) status.textContent = "Refresh failed — retrying.";
+        }
     }
 
     /* Chart.js 4 has a built-in time scale but needs a date adapter. To stay
@@ -281,11 +594,31 @@
         }
 
         const readings = history.readings || [];
-        if (prices.length === 0 && readings.length === 0 && solarPoints.length === 0) {
+        if (prices.length > 0 || readings.length > 0 || solarPoints.length > 0) {
+            chart = renderCombined(canvas, prices, readings, solarPoints);
+        } else {
             showEmpty(canvas, "No prices, SoC history, or solar forecast yet — waiting for tick loop.");
-            return;
         }
-        renderCombined(canvas, prices, readings, solarPoints);
+
+        // Pause polling while the tab is hidden — the user already gets
+        // a fresh render on their next focus via the manual `refreshAll`
+        // we trigger on visibilitychange.
+        let timer = null;
+        function start() {
+            if (timer == null) timer = setInterval(refreshAll, REFRESH_MS);
+        }
+        function stop() {
+            if (timer != null) { clearInterval(timer); timer = null; }
+        }
+        document.addEventListener("visibilitychange", () => {
+            if (document.hidden) {
+                stop();
+            } else {
+                refreshAll();
+                start();
+            }
+        });
+        start();
     }
 
     if (document.readyState === "loading") {

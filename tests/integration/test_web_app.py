@@ -144,6 +144,7 @@ async def test_health_lists_all_expected_sources(client: AsyncClient) -> None:
         "car_charger",
         "p1_meter",
         "small_solar",
+        "large_solar",
         "solaredge",
         "prices",
         "solar_forecast",
@@ -161,6 +162,7 @@ async def test_health_ok_when_recent_success(client: AsyncClient) -> None:
             SourceName.CAR_CHARGER,
             SourceName.P1_METER,
             SourceName.SMALL_SOLAR,
+            SourceName.LARGE_SOLAR,
             SourceName.SOLAREDGE,
             SourceName.PRICES,
             SourceName.SOLAR_FORECAST,
@@ -172,6 +174,58 @@ async def test_health_ok_when_recent_success(client: AsyncClient) -> None:
     body = resp.json()
     assert body["status"] == "ok"
     assert all(s["status"] == "OK" for s in body["sources"])
+
+
+async def test_clear_errors_nulls_error_columns(client: AsyncClient) -> None:
+    """POST /api/source-status/clear-errors blanks last_error_at and
+    last_error_message on every row, leaving last_success_at intact."""
+    factory = client._transport.app.state.session_factory  # type: ignore[attr-defined]
+    async with UnitOfWork(factory) as uow:
+        await uow.source_status.record_success(
+            SourceName.SOLAREDGE, payload={"active_power_limit_pct": 100.0}
+        )
+        await uow.source_status.record_error(SourceName.SOLAREDGE, message="boom")
+        await uow.source_status.record_error(SourceName.SONNEN, message="kaboom")
+        await uow.commit()
+
+    resp = await client.post("/api/source-status/clear-errors")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cleared"] >= 2
+
+    async with UnitOfWork(factory) as uow:
+        rows = {r.source_name: r for r in await uow.source_status.all()}
+    assert rows["solaredge"].last_error_at is None
+    assert rows["solaredge"].last_error_message is None
+    # last_success_at is untouched.
+    assert rows["solaredge"].last_success_at is not None
+    assert rows["sonnen"].last_error_at is None
+    assert rows["sonnen"].last_error_message is None
+
+
+async def test_health_ok_when_success_follows_recent_error(client: AsyncClient) -> None:
+    """A successful read after a recent error must clear the ERROR badge —
+    regression test for the classifier holding ERROR for a fixed cooldown
+    even though SolarEdge had recovered on the next tick."""
+    factory = client._transport.app.state.session_factory  # type: ignore[attr-defined]
+    async with UnitOfWork(factory) as uow:
+        # Pre-existing error from a previous (failed) tick.
+        await uow.source_status.record_error(
+            SourceName.SOLAREDGE, message="modbus glitch from prior session"
+        )
+        # Now the device recovers — successful read on this tick.
+        await uow.source_status.record_success(
+            SourceName.SOLAREDGE, payload={"active_power_limit_pct": 100.0}
+        )
+        await uow.commit()
+
+    resp = await client.get("/api/health")
+    body = resp.json()
+    solaredge = next(s for s in body["sources"] if s["source_name"] == "solaredge")
+    assert solaredge["status"] == "OK", (
+        f"recovered source should classify OK, got {solaredge['status']} "
+        f"with last_error_message={solaredge.get('last_error_message')!r}"
+    )
 
 
 # ----- API: /api/prices --------------------------------------------------------

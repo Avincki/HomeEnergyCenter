@@ -13,13 +13,17 @@
             <tr>
                 <td>{{ h.source_name }}</td>
                 <td><span class="badge badge-{{ h.status | lower }}">{{ h.status }}</span></td>
-                <td>{% if h.row and h.row.last_success_at %}{{ h.row.last_success_at.strftime("%Y-%m-%d %H:%M:%S") }}{% else %}&mdash;{% endif %}</td>
-                <td>{% if h.row and h.row.last_error_at %}{{ h.row.last_error_at.strftime("%Y-%m-%d %H:%M:%S") }}{% else %}&mdash;{% endif %}</td>
+                <td>{% if h.row and h.row.last_success_at %}{{ h.row.last_success_at | localtime }}{% else %}&mdash;{% endif %}</td>
+                <td>{% if h.row and h.row.last_error_at %}{{ h.row.last_error_at | localtime }}{% else %}&mdash;{% endif %}</td>
                 <td class="reason">{% if h.row and h.row.last_error_message %}{{ h.row.last_error_message }}{% else %}&mdash;{% endif %}</td>
             </tr>
         {% endfor %}
         </tbody>
     </table>
+    <p>
+        <button id="clear-errors" type="button">Clear all errors</button>
+        <span class="hint">Nulls <code>last_error_at</code> + <code>last_error_message</code> on every source row. The next failed poll repopulates them.</span>
+    </p>
 </section>
 
 <section>
@@ -28,7 +32,7 @@
         Currently:
         <strong>{{ override.mode | upper }}</strong>
         {% if override.expires_at %}
-            (until {{ override.expires_at.strftime("%Y-%m-%d %H:%M:%S") }})
+            (until {{ override.expires_at | localtime }})
         {% endif %}
     </p>
     <form id="override-form">
@@ -57,7 +61,7 @@
         <tbody>
         {% for d in recent_decisions | reverse %}
             <tr>
-                <td>{{ d.timestamp.strftime("%Y-%m-%d %H:%M:%S") }}</td>
+                <td>{{ d.timestamp | localtime }}</td>
                 <td><span class="badge badge-{{ d.state }}">{{ d.state }}</span></td>
                 <td>{{ d.rule_fired }}</td>
                 <td class="reason">{{ d.reason }}</td>
@@ -93,6 +97,16 @@ document.getElementById('override-form').addEventListener('submit', async functi
         location.reload();
     } else {
         const err = await resp.json();
+        alert('Error: ' + (err.detail || resp.statusText));
+    }
+});
+
+document.getElementById('clear-errors').addEventListener('click', async function() {
+    const resp = await fetch('/api/source-status/clear-errors', { method: 'POST' });
+    if (resp.ok) {
+        location.reload();
+    } else {
+        const err = await resp.json().catch(() => ({}));
         alert('Error: ' + (err.detail || resp.statusText));
     }
 });

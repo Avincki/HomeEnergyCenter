@@ -92,10 +92,21 @@ class SmallSolarConfig(HomeWizardDeviceConfig):
     )
 
 
+class LargeSolarConfig(HomeWizardDeviceConfig):
+    peak_w: float = Field(
+        ...,
+        gt=0,
+        description="Nameplate peak output of the large PV string (e.g. east+west arrays)",
+    )
+
+
 class HomeWizardConfig(_StrictModel):
     car_charger: CarChargerConfig
     p1_meter: P1MeterConfig
     small_solar: SmallSolarConfig
+    # Optional second HomeWizard kWh meter on a larger PV string. Omit the
+    # whole subsection to disable.
+    large_solar: LargeSolarConfig | None = None
 
 
 class SolarEdgeConfig(DeviceConfig):
@@ -225,6 +236,10 @@ class WebConfig(_StrictModel):
 
 class AppConfig(_StrictModel):
     poll_interval_s: float = Field(default=30.0, gt=0.0, le=600.0)
+    # How often the decision engine runs (and SolarEdge is actuated, if state
+    # flipped). Decoupled from poll_interval_s so the dashboard can show fresh
+    # readings while the inverter is left alone unless a real edge occurs.
+    decision_interval_s: float = Field(default=60.0, gt=0.0, le=3600.0)
     sonnen: SonnenBatterieConfig
     homewizard: HomeWizardConfig
     solaredge: SolarEdgeConfig

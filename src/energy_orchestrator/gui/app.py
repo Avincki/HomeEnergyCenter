@@ -21,6 +21,7 @@ from energy_orchestrator.config.models import (
     AppConfig,
     CarChargerConfig,
     DeviceConfig,
+    LargeSolarConfig,
     P1MeterConfig,
     SmallSolarConfig,
     SolarEdgeConfig,
@@ -79,6 +80,13 @@ _SMALL_SOLAR_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("Timeout (s)", "homewizard.small_solar.timeout_s"),
     FieldSpec("Retry count", "homewizard.small_solar.retry_count"),
 )
+_LARGE_SOLAR_FIELDS: tuple[FieldSpec, ...] = (
+    FieldSpec("Host", "homewizard.large_solar.host", hint="leave blank to disable"),
+    FieldSpec("Port", "homewizard.large_solar.port"),
+    FieldSpec("Peak (W)", "homewizard.large_solar.peak_w"),
+    FieldSpec("Timeout (s)", "homewizard.large_solar.timeout_s"),
+    FieldSpec("Retry count", "homewizard.large_solar.retry_count"),
+)
 _SOLAREDGE_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("Host", "solaredge.host"),
     FieldSpec("Modbus port", "solaredge.modbus_port"),
@@ -110,6 +118,7 @@ _SAFETY_FIELDS: tuple[FieldSpec, ...] = (
 # System tab.
 _OPS_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("Poll interval (s)", "poll_interval_s"),
+    FieldSpec("Decision interval (s)", "decision_interval_s"),
     FieldSpec("SQLite path", "storage.sqlite_path"),
     FieldSpec("History retention (days)", "storage.history_retention_days"),
 )
@@ -189,6 +198,12 @@ class ConfigEditorApp:
         self._add_device_section(tab, "HomeWizard — P1 Meter", _P1_FIELDS, p1_probe_factory)
         self._add_device_section(
             tab, "HomeWizard — Small Solar", _SMALL_SOLAR_FIELDS, small_solar_probe_factory
+        )
+        self._add_device_section(
+            tab,
+            "HomeWizard — Large Solar (optional)",
+            _LARGE_SOLAR_FIELDS,
+            large_solar_probe_factory,
         )
         self._add_device_section(tab, "SolarEdge", _SOLAREDGE_FIELDS, solaredge_probe_factory)
         return tab
@@ -462,6 +477,21 @@ def small_solar_probe_factory(form: AppConfigForm) -> DeviceConfig | str:
             "peak_w": form.get("homewizard.small_solar.peak_w", "2000"),
             "timeout_s": form.get("homewizard.small_solar.timeout_s", "5"),
             "retry_count": form.get("homewizard.small_solar.retry_count", "3"),
+        },
+    )
+
+
+def large_solar_probe_factory(form: AppConfigForm) -> DeviceConfig | str:
+    if not form.get("homewizard.large_solar.host", "").strip():
+        return "host is empty — large solar is disabled"
+    return _try_build(
+        LargeSolarConfig,
+        {
+            "host": form.get("homewizard.large_solar.host", ""),
+            "port": form.get("homewizard.large_solar.port", "80"),
+            "peak_w": form.get("homewizard.large_solar.peak_w", "4000"),
+            "timeout_s": form.get("homewizard.large_solar.timeout_s", "5"),
+            "retry_count": form.get("homewizard.large_solar.retry_count", "3"),
         },
     )
 

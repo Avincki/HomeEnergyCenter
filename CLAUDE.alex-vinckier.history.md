@@ -968,3 +968,266 @@ All 250 pass. Three test fixups needed:
   validation builder (what I did) or use `model_copy(update=...)`.
   The baseline approach keeps the failure mode in front of the
   validator instead of after it.
+
+## 2026-05-04 (evening) — Live dashboard, decoupled cadences, large_solar device, classifier fix
+
+Long session, many small wins that compound. Dashboard goes from "refresh
+on tab-switch" to live-at-5s; orchestrator's tick loop splits into a fast
+device poll and a slow decision step; a second optional HomeWizard kWh
+meter (`large_solar`) lands end-to-end (config → schema migration → API
+→ tile → chart curve); source-health classifier no longer holds ERROR
+across recovered ticks. 253 tests passing.
+
+### Time rendering — both halves of the rope
+
+User reported "all times are UTC" on Debug tab and chart x-axis. Two
+separate fixes were needed:
+
+1. **Server-rendered Jinja times.** Added a `localtime(dt, fmt)` filter
+   in `web/views.py` that re-attaches UTC to naive SQLite datetimes
+   (round-trip drops tzinfo even with `DateTime(timezone=True)`) and
+   returns `dt.astimezone().strftime(fmt)`. Applied across `debug.html`
+   and `dashboard.html` for every `strftime` call.
+2. **Client-rendered times via the API.** The polling JS overwrites
+   server-rendered times within ~5–10 s. The serializers in `web/api.py`
+   were calling `.isoformat()` on naive UTC datetimes, producing
+   `"2026-05-04T14:00:00"` (no zone). JS `new Date(...)` on a no-zone
+   string parses as **local**, shifting the values by the TZ offset.
+   Added `_iso_utc(dt)` that re-attaches UTC before isoformat and routed
+   every `Reading` / `Decision` / `SourceStatus` / `OverrideController`
+   timestamp through it. Now JS sees `"+00:00"` and converts correctly.
+
+### Auto-refresh dashboard (5 s polling, in-place updates)
+
+User: "the dashboard is not updated. Only when I go to another tab and
+back do I see new values." Tiles, state card, recent-decisions table,
+and chart datasets all needed live updates. Approach:
+
+- Gave every live element a stable id (`tile-soc`, `state-text`,
+  `state-when`, `recent-decisions-body`, …) and reworked the conditional
+  branches so the same DOM survives empty → populated transitions
+  without re-rendering (e.g. `state-empty-headline` is hidden, not
+  conditionally absent).
+- `dashboard.js` now keeps the `Chart` instance, runs `refreshAll()`
+  every `REFRESH_MS` (5000), updates DOM via small helpers (`setText`,
+  `setHidden`, `fmtTime*`), and calls `chart.update("none")` to redraw
+  without animation. Pauses on `visibilitychange` so a hidden tab stops
+  hammering the API.
+- Footer hint reads "Live — last refresh HH:MM:SS" so the user can see
+  when the connection drops.
+
+### Decoupled poll vs decision (split option B)
+
+Asked the user: "speed up the dashboard only, or also split device-poll
+from decisioning?" They picked the split. Added
+**`AppConfig.decision_interval_s`** (default 60 s, range 0 < x ≤ 3600).
+`TickLoop` keeps `_last_decision_at`; every tick polls devices + writes a
+`Reading`, but the engine + SolarEdge actuation only run when
+`(now − _last_decision_at) >= decision_interval_s` (or first tick after
+startup, so we don't sit idle for a minute). Importantly, when sonnen
+SoC is unavailable we **don't** advance `_last_decision_at` — retry on
+the next poll instead of waiting another full minute.
+
+Added `test_decision_interval_gates_subsequent_ticks` covering first
+tick / gated tick / gate-elapsed tick. Anchored its `base = now()` to
+mid-hour (`replace(minute=30, second=0, microsecond=0)`) — without that,
+runs near an hour boundary cross into the next hour and
+`get_current_hour_price` returns None → engine flips to OFF for an
+unrelated reason. Took one false-positive failure to spot.
+
+End of session, set the user's `config.yaml` to `poll_interval_s: 5`,
+`decision_interval_s: 60`. Their tile data now changes on every browser
+poll instead of every 6th.
+
+### Wider price-fetch window (so chart bars cover local-day fully)
+
+Chart x-axis is locked to local 00:00 → 24:00 today. East-of-UTC zones
+(Brussels DST = UTC+2) mean the first 2 hours of local-today live in
+**yesterday's UTC date**, which the old `[today-UTC-00, +2 days)` window
+didn't cover — left a visible gap. Replaced `_PRICE_LOOKAHEAD = 2 days`
+with `_PRICE_PAST_DAYS = 1 day` + `_PRICE_FUTURE_DAYS = 2 days`; both
+the orchestrator's `_refresh_prices_if_stale` and `/api/prices` now
+return `[today-UTC-00 − 1 d, today-UTC-00 + 2 d)` (3 days). Chart already
+clips outside its visible range, so the extras are visually free; the
+decision engine filters by `p.timestamp <= now < +1h` so the historical
+prices in the cache are inert. ENTSO-E happily returns yesterday's
+prices, so no provider-side changes.
+
+### Sign flips + tile renames (display-only, schema unchanged)
+
+User wanted positive numbers to mean "the right thing":
+
+- **Battery power**: positive = **charging** (was discharging). Hint
+  updated.
+- **Small / large solar**: positive = **generating** (later the explicit
+  hint was removed at user request — the sign convention reads cleaner
+  without the disclaimer cluttering the tile).
+- **Grid feed-in → Grid import**: positive = **importing**. "Import" beat
+  "Usage" (overlaps with House consumption) and "Consumption" (verbose).
+
+The DB columns keep their existing semantics — flip happens in the
+template (`{{ "%.0f" | format(-reading.foo_w) }}`) and in the JS poller
+(`fmtInt(neg(reading.foo_w), " W")`). No migration, no historical-data
+reinterpretation.
+
+### large_solar — second optional HomeWizard kWh meter, end-to-end
+
+User has a second PV string they want measured (and which the SolarEdge
+inverter actuates ON/OFF). Added the device entirely as **optional** so
+existing `config.yaml` files keep working unchanged:
+
+- `LargeSolarConfig` (mirrors `SmallSolarConfig`, same `peak_w` field).
+- `HomeWizardConfig.large_solar: LargeSolarConfig | None = None` —
+  `None` means "no device".
+- `SourceName.LARGE_SOLAR`, `Reading.large_solar_w` (Float | None).
+- New alembic migration `0002_add_large_solar_w.py` — single
+  `ALTER TABLE readings ADD COLUMN large_solar_w FLOAT`.
+- `LargeSolarClient(HomeWizardClient[LargeSolarConfig])` registered.
+- `TickLoop.__init__` builds the client conditionally; `tick()` parallel-
+  reads it via a new `_read_optional(client)` helper that no-ops on
+  `None`; `_close_resources` closes it if present.
+- API `_reading_to_dict` includes `large_solar_w`.
+- `web/config_form.py` + `gui/app.py` got a "HomeWizard — Large Solar
+  (optional)" section with the hint "leave blank to disable".
+- **Form-binding round-trip needed care.** When `large_solar=None`,
+  `model_dump()` produces `large_solar: None`; `_flatten` sees
+  `obj=None`, which is **not** a Mapping, so it emits
+  `flat["homewizard.large_solar"] = ""` — that empty-string would later
+  fail Pydantic's `LargeSolarConfig` validation. Two-part fix:
+  (a) `config_to_form` pops `homewizard.large_solar` when `None`, same
+  pattern as the existing `solar` pop; (b) `form_to_config` prunes
+  `homewizard.large_solar` back to `None` if the user left `host` blank
+  (or the placeholder slipped through as a non-dict). Round-trip
+  stable in both directions now.
+- `_config_view` (debug page) and `_config_to_plain_dict` (YAML save)
+  emit `large_solar` only when configured.
+
+Three test files needed updates: the `/api/health` source-name set
+expects `large_solar`; the orchestrator test that asserts every
+`SourceName` got recorded subtracts `LARGE_SOLAR` (test config has no
+device so it's legitimately absent).
+
+### Migration gotcha: pre-alembic database
+
+User's live DB was created via `init_schema` (`Base.metadata.create_all`)
+on first run, so it had no `alembic_version` row. `alembic upgrade head`
+would try to run `0001_initial` against an existing schema and fail. The
+fix is two commands:
+
+```
+alembic stamp 0001_initial    # record "DB is at rev 1" without running it
+alembic upgrade head          # apply 0002 only
+```
+
+I ran them for the user from the orchestrator working dir while their
+process was stopped. Future migrations are just `alembic upgrade head`.
+Worth surfacing to anyone deploying a fresh Pi: either stamp on first
+boot, or stop using `init_schema` for non-test bootstrapping.
+
+### pymodbus 3.7+ rename: slave → device_id
+
+Trying to actuate SolarEdge surfaced
+`TypeError: ModbusClientMixin.read_holding_registers() got an unexpected
+keyword argument 'slave'`. pymodbus renamed `slave=` → `device_id=` in
+3.7 and removed the deprecated alias by 3.11+. User's installed version
+is 3.13. Renamed both call sites in `solaredge.py`, fixed three
+`assert_awaited_once_with` mocks in `test_devices_solaredge.py`, bumped
+the floor in `pyproject.toml` from `>=3.6,<4.0` → `>=3.7,<4.0`, and
+removed the now-stale comment about `slave=` being rejected by stubs.
+
+### Source-status classifier: most-recent event wins
+
+User noted SolarEdge stayed ERROR on the Debug tab even though the error
+message was from the previous session and recent polls were succeeding.
+The old classifier had a bug: any error within 5 minutes returned ERROR
+**regardless** of whether a successful poll happened after it. Rewrote
+`_classify_source_status` so the most recent of `last_success_at` /
+`last_error_at` decides the state:
+
+- Latest is success, age ≤ 5 min → OK
+- Latest is success, age 5–30 min → DEGRADED
+- Latest is success, age > 30 min → ERROR
+- Latest is error, age ≤ 30 min → ERROR
+- Latest is error, age > 30 min → UNKNOWN
+
+The "Last error" column still displays the most recent failure for
+diagnostics, but it no longer drives the badge. Added
+`test_health_ok_when_success_follows_recent_error` to lock it in.
+
+### "Clear all errors" button on Debug tab
+
+User: "while we're here, give me a button to wipe stale error messages."
+Added `SourceStatusRepository.clear_all_errors()` — bulk
+`UPDATE source_status SET last_error_at=NULL, last_error_message=NULL`.
+New endpoint `POST /api/source-status/clear-errors` that calls it inside
+a UoW. Button + JS in `debug.html` POSTs and reloads. Returns
+`{"cleared": rowcount}`. `last_success_at`, `last_payload`, `updated_at`
+left intact — pure ack-and-clear, not a polling pause. Test
+`test_clear_errors_nulls_error_columns` verifies the column subset and
+that other fields are preserved.
+
+### Solar tile redesign + chart total-solar curve
+
+The two solar tiles became cramped quickly. Merged into one wide tile
+(`.tile-wide` with `grid-column: span 2`) holding three labeled cells —
+**small + large = total** — separated by `+` and `=` operators. Cell
+labels `solar-cell-label` are uppercase muted; values are `1.4 rem 600`;
+the total is rendered in the same green as the SoC line so it reads as
+the headline of the tile. Sign-flip and "missing meter" fallback are
+shared between Jinja initial render and the JS polling path
+(`applySolarTile` in `dashboard.js`).
+
+User then asked for a **measured total-solar curve on the chart**, in
+yellow with the same contrast treatment as the SoC. Added
+`COLOR_TOTAL_SOLAR = "#fde047"` (yellow-300) and two datasets — a
+6-px-wide dark halo (`COLOR_SOC_HALO`) underneath, a 3-px-wide bright
+yellow line on top — both bound to the existing `ySolar` (kW) axis so
+the new line shares scale with the orange forecast curve.
+`buildChartData` now derives `totalSolarLine` from `readings` (same
+sign-flip + missing-meter fallback as the tile); points where neither
+meter reported are dropped and `spanGaps: true` reconnects.
+Stacking order, top → bottom: SoC line → SoC halo → total-solar line →
+total-solar halo → forecast solar (filled) → price bars. Tooltip uses
+the dataset's `label` directly so hovers read "Forecast solar 2.41 kW"
+vs "Total solar 1.93 kW" instead of an ambiguous "Solar".
+
+### SoC line contrast pass (mid-session)
+
+Before the yellow line landed, user asked to make the SoC line "stand
+out more". Bumped `borderWidth` 2 → 3, brightened the green
+`#22c55e → #4ade80`, dropped the dataset to `order: 0` (top), and added
+the dark halo dataset (`_soc_halo`, `borderWidth: 6`) drawn just behind.
+Halo is hidden from legend/tooltip via the `_`-prefix label filter. The
+total-solar curve reuses the exact same trick.
+
+### Reusable nuggets
+
+- **SQLite drops tzinfo even on `DateTime(timezone=True)`.** The fix
+  has to happen at the serialization boundary on every read, not via
+  the column type. A `_utc_aware()` re-attach + a paired `_iso_utc()`
+  helper kept things consistent.
+- **JS `new Date("2026-05-04T14:00:00")` parses as local**, not UTC. If
+  your API emits naive ISO strings, your client side-shifts silently by
+  the TZ offset. `.isoformat()` on a tz-naive datetime is a serializer
+  bug, even when the Python side treats the value as UTC by convention.
+- **Chart.js bars are clipped against `scales.x.{min,max}`**, so over-
+  fetching to fill local-day windows in non-UTC zones is free. No
+  client-side filtering needed.
+- **A "stamp before upgrade"** dance is necessary any time a database
+  was created via `Base.metadata.create_all` rather than the first
+  migration. Easy to forget on Pi-style deploys where the dev path is
+  `init_schema` and the prod path is alembic.
+- **pymodbus moves fast.** `slave=` → `device_id=` is the kind of
+  rename that's silently okay until the deprecated alias is dropped a
+  few minor versions later. Keep the floor pinned to the version that
+  actually exposes the new keyword, not just "latest 3.x".
+- **Holding ERROR badges on a fixed cooldown after success** is worse
+  than a "latest event wins" rule, because successful polls during the
+  cooldown look like nothing changed. The cooldown idea felt right at
+  Phase-10 time but operating the dashboard exposed how confusing it is.
+- **Optional sub-models in pydantic + dotted-key form serializers**
+  need explicit prune logic on both sides of the round-trip
+  (`config_to_form` strips when `None`, `form_to_config` re-strips when
+  the visible host field is empty). Otherwise `_flatten` and
+  `_set_nested` happily produce a placeholder dict that fails
+  validation with a confusing message.

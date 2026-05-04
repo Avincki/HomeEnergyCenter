@@ -76,7 +76,7 @@ async def test_read_data_returns_active_power_limit(mocker: MockerFixture) -> No
     assert reading.data == {"active_power_limit_pct": 42.0}
     assert reading.quality == 1.0
     instance.connect.assert_awaited_once()
-    instance.read_holding_registers.assert_awaited_once_with(address=0xF001, count=1, slave=1)
+    instance.read_holding_registers.assert_awaited_once_with(address=0xF001, count=1, device_id=1)
 
 
 async def test_read_isError_raises_protocol_error(mocker: MockerFixture) -> None:
@@ -110,7 +110,7 @@ async def test_set_off_writes_zero_and_reads_back(mocker: MockerFixture) -> None
     async with SolarEdgeClient(_config()) as client:
         await client.set_active_power_limit(0)
 
-    instance.write_register.assert_awaited_once_with(address=0xF001, value=0, slave=1)
+    instance.write_register.assert_awaited_once_with(address=0xF001, value=0, device_id=1)
     instance.read_holding_registers.assert_awaited_once()
 
 
@@ -119,7 +119,7 @@ async def test_set_on_writes_hundred_and_reads_back(mocker: MockerFixture) -> No
     async with SolarEdgeClient(_config()) as client:
         await client.set_active_power_limit(100)
 
-    instance.write_register.assert_awaited_once_with(address=0xF001, value=100, slave=1)
+    instance.write_register.assert_awaited_once_with(address=0xF001, value=100, device_id=1)
     instance.read_holding_registers.assert_awaited_once()
 
 

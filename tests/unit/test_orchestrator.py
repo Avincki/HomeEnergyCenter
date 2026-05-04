@@ -222,8 +222,12 @@ async def test_tick_persists_reading_and_decision(
     assert latest_decision is not None
     assert latest_decision.state == DecisionState.ON.value
     assert latest_decision.rule_fired == "positive_injection_price"
-    # solar_forecast is conditional on solar config being present
-    expected = {s.value for s in SourceName} - {SourceName.SOLAR_FORECAST.value}
+    # solar_forecast and large_solar are conditional on optional config being
+    # present — neither is configured in this test, so neither should appear.
+    expected = (
+        {s.value for s in SourceName}
+        - {SourceName.SOLAR_FORECAST.value, SourceName.LARGE_SOLAR.value}
+    )
     assert expected <= set(sources.keys())
 
 
@@ -400,3 +404,55 @@ async def test_tick_records_price_fetch_error(
         decision = await uow.decisions.latest()
     assert decision is not None
     assert decision.state == DecisionState.OFF.value
+
+
+async def test_decision_interval_gates_subsequent_ticks(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """Ticks within decision_interval_s of the last decision skip the engine
+    and the actuator, but still write a Reading row each time."""
+    config = _config(tmp_path, dry_run=False)
+    config = config.model_copy(update={"decision_interval_s": 60.0})
+    cache = PriceCache()
+    loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
+    fake_se = FakeSolarEdge()
+    # ``recent(hours=...)`` uses datetime.now(UTC) as the cutoff, so anchor the
+    # tick timestamps to "now" instead of a fixed historical date. Snap to
+    # mid-hour so the +60 s tick stays inside the same UTC hour (otherwise
+    # ``get_current_hour_price`` could miss the cached point and the engine
+    # would flip to OFF for an unrelated reason).
+    base = datetime.now(UTC).replace(minute=30, second=0, microsecond=0)
+    _install_fakes(
+        loop,
+        sonnen=FakeClient(SourceName.SONNEN, data={"soc_pct": 75.0}),
+        car=FakeClient(SourceName.CAR_CHARGER, data={"active_power_w": 0.0}),
+        p1=FakeClient(SourceName.P1_METER, data={"active_power_w": 0.0}),
+        small=FakeClient(SourceName.SMALL_SOLAR, data={"active_power_w": 0.0}),
+        solaredge=fake_se,
+        provider=FakeProvider([_hour_price(base, injection=0.05)]),
+    )
+
+    async def counts() -> tuple[int, int]:
+        async with UnitOfWork(session_factory) as uow:
+            d = list(await uow.decisions.recent(hours=1))
+            r = list(await uow.readings.recent(hours=1))
+        return len(d), len(r)
+
+    # First tick: no prior decision -> engine runs, actuator fires (state flip
+    # from None to ON).
+    await loop.tick(now=base)
+    assert fake_se.write_calls == [100]
+    assert await counts() == (1, 1)
+
+    # Tick at +5 s — within the 60 s gate -> no new decision, no actuator call,
+    # but a fresh Reading should still be persisted.
+    await loop.tick(now=base + timedelta(seconds=5))
+    assert fake_se.write_calls == [100]  # unchanged
+    assert await counts() == (1, 2)
+
+    # Tick at +60 s — gate elapsed -> engine runs again. State is unchanged
+    # (still ON), so no new actuator write.
+    await loop.tick(now=base + timedelta(seconds=60))
+    assert fake_se.write_calls == [100]
+    assert await counts() == (2, 3)

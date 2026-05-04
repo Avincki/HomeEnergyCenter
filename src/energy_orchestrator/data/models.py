@@ -32,6 +32,7 @@ class SourceName(StrEnum):
     CAR_CHARGER = "car_charger"
     P1_METER = "p1_meter"
     SMALL_SOLAR = "small_solar"
+    LARGE_SOLAR = "large_solar"
     SOLAREDGE = "solaredge"
     PRICES = "prices"
     SOLAR_FORECAST = "solar_forecast"
@@ -54,6 +55,7 @@ class Reading(Base):
     car_charger_w: Mapped[float | None] = mapped_column(Float, nullable=True)
     p1_active_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)
     small_solar_w: Mapped[float | None] = mapped_column(Float, nullable=True)
+    large_solar_w: Mapped[float | None] = mapped_column(Float, nullable=True)
     injection_price_eur_per_kwh: Mapped[float | None] = mapped_column(Float, nullable=True)
     consumption_price_eur_per_kwh: Mapped[float | None] = mapped_column(Float, nullable=True)
 

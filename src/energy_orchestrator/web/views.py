@@ -40,6 +40,22 @@ SolarCacheDep = Annotated[SolarCache, Depends(get_solar_cache)]
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 _templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 
+
+def _localtime(dt: datetime | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
+    """Render a stored UTC datetime in the server's local timezone.
+
+    SQLite drops tzinfo on round-trip, so naive values arrive here — treat
+    them as UTC. ``astimezone()`` with no argument converts to system-local.
+    """
+    if dt is None:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone().strftime(fmt)
+
+
+_templates.env.filters["localtime"] = _localtime
+
 router = APIRouter()
 
 
@@ -254,6 +270,7 @@ def _config_view(config: AppConfig) -> dict[str, Any]:
     """
     return {
         "poll_interval_s": config.poll_interval_s,
+        "decision_interval_s": config.decision_interval_s,
         "sonnen": {
             "host": config.sonnen.host,
             "port": config.sonnen.port,
@@ -271,6 +288,14 @@ def _config_view(config: AppConfig) -> dict[str, Any]:
                 "host": config.homewizard.small_solar.host,
                 "peak_w": config.homewizard.small_solar.peak_w,
             },
+            "large_solar": (
+                None
+                if config.homewizard.large_solar is None
+                else {
+                    "host": config.homewizard.large_solar.host,
+                    "peak_w": config.homewizard.large_solar.peak_w,
+                }
+            ),
         },
         "solaredge": {
             "host": config.solaredge.host,

@@ -91,7 +91,7 @@ class SolarEdgeClient(DeviceClient[SolarEdgeConfig]):
             result = await client.read_holding_registers(
                 address=ACTIVE_POWER_LIMIT_REGISTER,
                 count=1,
-                slave=self.config.unit_id,
+                device_id=self.config.unit_id,
             )
         except TimeoutError as e:
             await self._drop_connection()
@@ -118,7 +118,7 @@ class SolarEdgeClient(DeviceClient[SolarEdgeConfig]):
             result = await client.write_register(
                 address=ACTIVE_POWER_LIMIT_REGISTER,
                 value=value,
-                slave=self.config.unit_id,
+                device_id=self.config.unit_id,
             )
         except TimeoutError as e:
             await self._drop_connection()

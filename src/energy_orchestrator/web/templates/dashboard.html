@@ -6,60 +6,81 @@
 {% endblock %}
 {% block content %}
 
-<section class="state-card {% if decision and decision.state == 'on' %}state-on{% elif decision and decision.state == 'off' %}state-off{% else %}state-unknown{% endif %}">
-    {% if decision %}
-        <div class="state-headline">
-            SolarEdge: <strong>{{ decision.state | upper }}</strong>
-            {% if override.active %}<span class="override-flag">override: {{ override.mode }}</span>{% endif %}
-        </div>
-        <div class="state-rule">{{ decision.rule_fired }}</div>
-        <div class="state-reason">{{ decision.reason }}</div>
-        <div class="state-when">decided {{ decision.timestamp.strftime("%Y-%m-%d %H:%M:%S %Z") }}</div>
-    {% else %}
-        <div class="state-headline">No decision recorded yet</div>
-        <div class="state-reason">The orchestrator tick loop hasn't produced a decision &mdash; populate config.yaml and start the service.</div>
-    {% endif %}
+<section id="state-card" class="state-card {% if decision and decision.state == 'on' %}state-on{% elif decision and decision.state == 'off' %}state-off{% else %}state-unknown{% endif %}">
+    <div class="state-headline" id="state-headline" {% if not decision %}hidden{% endif %}>
+        SolarEdge: <strong id="state-text">{% if decision %}{{ decision.state | upper }}{% endif %}</strong>
+        <span class="override-flag" id="state-override-flag" {% if not override.active %}hidden{% endif %}>override: <span id="state-override-mode">{{ override.mode }}</span></span>
+    </div>
+    <div class="state-rule" id="state-rule" {% if not decision %}hidden{% endif %}>{% if decision %}{{ decision.rule_fired }}{% endif %}</div>
+    <div class="state-reason" id="state-reason">{% if decision %}{{ decision.reason }}{% else %}The orchestrator tick loop hasn't produced a decision &mdash; populate config.yaml and start the service.{% endif %}</div>
+    <div class="state-when" id="state-when" {% if not decision %}hidden{% endif %}>{% if decision %}decided {{ decision.timestamp | localtime("%Y-%m-%d %H:%M:%S %Z") }}{% endif %}</div>
+    <div class="state-headline" id="state-empty-headline" {% if decision %}hidden{% endif %}>No decision recorded yet</div>
 </section>
 
 <section class="tiles">
     <div class="tile">
         <div class="tile-label">Battery SoC</div>
-        <div class="tile-value">{% if reading and reading.battery_soc_pct is not none %}{{ "%.1f" | format(reading.battery_soc_pct) }}%{% else %}&mdash;{% endif %}</div>
+        <div class="tile-value" id="tile-soc">{% if reading and reading.battery_soc_pct is not none %}{{ "%.1f" | format(reading.battery_soc_pct) }}%{% else %}&mdash;{% endif %}</div>
     </div>
     <div class="tile">
         <div class="tile-label">Battery power</div>
-        <div class="tile-value">{% if reading and reading.battery_power_w is not none %}{{ "%.0f" | format(reading.battery_power_w) }} W{% else %}&mdash;{% endif %}</div>
-        <div class="tile-hint">positive = discharging</div>
+        <div class="tile-value" id="tile-batt-power">{% if reading and reading.battery_power_w is not none %}{{ "%.0f" | format(-reading.battery_power_w) }} W{% else %}&mdash;{% endif %}</div>
+        <div class="tile-hint">positive = charging</div>
     </div>
     <div class="tile">
         <div class="tile-label">House consumption</div>
-        <div class="tile-value">{% if reading and reading.house_consumption_w is not none %}{{ "%.0f" | format(reading.house_consumption_w) }} W{% else %}&mdash;{% endif %}</div>
+        <div class="tile-value" id="tile-house">{% if reading and reading.house_consumption_w is not none %}{{ "%.0f" | format(reading.house_consumption_w) }} W{% else %}&mdash;{% endif %}</div>
     </div>
     <div class="tile">
         <div class="tile-label">Car charger</div>
-        <div class="tile-value">{% if reading and reading.car_charger_w is not none %}{{ "%.0f" | format(reading.car_charger_w) }} W{% else %}&mdash;{% endif %}</div>
+        <div class="tile-value" id="tile-car">{% if reading and reading.car_charger_w is not none %}{{ "%.0f" | format(reading.car_charger_w) }} W{% else %}&mdash;{% endif %}</div>
+    </div>
+    <div class="tile tile-wide">
+        <div class="tile-label">Solar production</div>
+        <div class="solar-breakdown">
+            <div class="solar-cell">
+                <div class="solar-cell-label">small</div>
+                <div class="solar-cell-value" id="tile-solar-small">{% if reading and reading.small_solar_w is not none %}{{ "%.0f" | format(-reading.small_solar_w) }} W{% else %}&mdash;{% endif %}</div>
+            </div>
+            <div class="solar-op">+</div>
+            <div class="solar-cell">
+                <div class="solar-cell-label">large</div>
+                <div class="solar-cell-value" id="tile-solar-large">{% if reading and reading.large_solar_w is not none %}{{ "%.0f" | format(-reading.large_solar_w) }} W{% else %}&mdash;{% endif %}</div>
+            </div>
+            <div class="solar-op">=</div>
+            <div class="solar-cell">
+                <div class="solar-cell-label">total</div>
+                <div class="solar-cell-value solar-cell-total" id="tile-solar-total">
+                    {%- if reading and reading.small_solar_w is not none and reading.large_solar_w is not none -%}
+                        {{ "%.0f" | format(-reading.small_solar_w - reading.large_solar_w) }} W
+                    {%- elif reading and reading.small_solar_w is not none -%}
+                        {{ "%.0f" | format(-reading.small_solar_w) }} W
+                    {%- elif reading and reading.large_solar_w is not none -%}
+                        {{ "%.0f" | format(-reading.large_solar_w) }} W
+                    {%- else -%}
+                        &mdash;
+                    {%- endif -%}
+                </div>
+            </div>
+        </div>
     </div>
     <div class="tile">
-        <div class="tile-label">Small solar</div>
-        <div class="tile-value">{% if reading and reading.small_solar_w is not none %}{{ "%.0f" | format(reading.small_solar_w) }} W{% else %}&mdash;{% endif %}</div>
-    </div>
-    <div class="tile">
-        <div class="tile-label">Grid feed-in</div>
-        <div class="tile-value">{% if reading and reading.grid_feed_in_w is not none %}{{ "%.0f" | format(reading.grid_feed_in_w) }} W{% else %}&mdash;{% endif %}</div>
-        <div class="tile-hint">positive = exporting</div>
+        <div class="tile-label">Grid import</div>
+        <div class="tile-value" id="tile-grid">{% if reading and reading.grid_feed_in_w is not none %}{{ "%.0f" | format(-reading.grid_feed_in_w) }} W{% else %}&mdash;{% endif %}</div>
+        <div class="tile-hint">positive = importing</div>
     </div>
     <div class="tile">
         <div class="tile-label">Injection price</div>
-        <div class="tile-value">{% if reading and reading.injection_price_eur_per_kwh is not none %}{{ "%.4f" | format(reading.injection_price_eur_per_kwh) }} €/kWh{% else %}&mdash;{% endif %}</div>
+        <div class="tile-value" id="tile-inj-price">{% if reading and reading.injection_price_eur_per_kwh is not none %}{{ "%.4f" | format(reading.injection_price_eur_per_kwh) }} €/kWh{% else %}&mdash;{% endif %}</div>
     </div>
     <div class="tile">
         <div class="tile-label">Override</div>
-        <div class="tile-value">{{ override.mode | upper }}</div>
-        {% if override.expires_at %}<div class="tile-hint">until {{ override.expires_at.strftime("%H:%M") }}</div>{% endif %}
+        <div class="tile-value" id="tile-override">{{ override.mode | upper }}</div>
+        <div class="tile-hint" id="tile-override-until" {% if not override.expires_at %}hidden{% endif %}>{% if override.expires_at %}until {{ override.expires_at | localtime("%H:%M") }}{% endif %}</div>
     </div>
     <div class="tile">
         <div class="tile-label">Expected solar today</div>
-        <div class="tile-value">{% if solar_today_kwh is not none %}{{ "%.1f" | format(solar_today_kwh) }} kWh{% else %}&mdash;{% endif %}</div>
+        <div class="tile-value" id="tile-solar-today">{% if solar_today_kwh is not none %}{{ "%.1f" | format(solar_today_kwh) }} kWh{% else %}&mdash;{% endif %}</div>
         <div class="tile-hint">forecast.solar</div>
     </div>
 </section>
@@ -69,20 +90,19 @@
     <div class="chart-card chart-card-tall">
         <canvas id="mainChart"></canvas>
     </div>
-    <p class="hint">Bars = injection &euro;/kWh (left axis; red = negative, accent outline = current hour). Line = battery SoC % (right axis). Filled orange = forecast solar power, summed across arrays (far right axis, kW).</p>
+    <p class="hint">Bars = injection &euro;/kWh (left axis; red = negative, accent outline = current hour). Green line = battery SoC % (right axis). Filled orange = forecast solar power, summed across arrays (far right axis, kW). Yellow line = measured total solar (small + large), kW.</p>
 </section>
 
 <section>
     <h2>Recent decisions (last 24 h)</h2>
-    {% if recent_decisions %}
-    <table>
+    <table id="recent-decisions-table" {% if not recent_decisions %}hidden{% endif %}>
         <thead>
             <tr><th>When</th><th>State</th><th>Rule</th><th>Reason</th><th>Override</th></tr>
         </thead>
-        <tbody>
+        <tbody id="recent-decisions-body">
         {% for d in recent_decisions | reverse %}
             <tr>
-                <td>{{ d.timestamp.strftime("%H:%M:%S") }}</td>
+                <td>{{ d.timestamp | localtime("%H:%M:%S") }}</td>
                 <td><span class="badge badge-{{ d.state }}">{{ d.state }}</span></td>
                 <td>{{ d.rule_fired }}</td>
                 <td class="reason">{{ d.reason }}</td>
@@ -91,9 +111,9 @@
         {% endfor %}
         </tbody>
     </table>
-    {% else %}
-    <p class="empty">No decisions logged yet.</p>
-    {% endif %}
+    <p class="empty" id="recent-decisions-empty" {% if recent_decisions %}hidden{% endif %}>No decisions logged yet.</p>
 </section>
+
+<p class="hint" id="dashboard-refresh-status">Live &mdash; refreshing every 5 s.</p>
 
 {% endblock %}

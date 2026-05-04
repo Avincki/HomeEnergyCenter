@@ -21,6 +21,7 @@ from tenacity import (
 from energy_orchestrator.config.models import (
     CarChargerConfig,
     HomeWizardDeviceConfig,
+    LargeSolarConfig,
     P1MeterConfig,
     SmallSolarConfig,
 )
@@ -146,3 +147,8 @@ class P1MeterClient(HomeWizardClient[P1MeterConfig]):
 @register_device(SmallSolarConfig)
 class SmallSolarClient(HomeWizardClient[SmallSolarConfig]):
     source_name = SourceName.SMALL_SOLAR
+
+
+@register_device(LargeSolarConfig)
+class LargeSolarClient(HomeWizardClient[LargeSolarConfig]):
+    source_name = SourceName.LARGE_SOLAR

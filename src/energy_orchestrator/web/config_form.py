@@ -79,6 +79,20 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                 ),
             ),
             WebSection(
+                "HomeWizard — Large Solar (optional)",
+                (
+                    WebField(
+                        "Host",
+                        "homewizard.large_solar.host",
+                        hint="leave blank to disable",
+                    ),
+                    WebField("Port", "homewizard.large_solar.port"),
+                    WebField("Peak (W)", "homewizard.large_solar.peak_w"),
+                    WebField("Timeout (s)", "homewizard.large_solar.timeout_s"),
+                    WebField("Retry count", "homewizard.large_solar.retry_count"),
+                ),
+            ),
+            WebSection(
                 "SolarEdge",
                 (
                     WebField("Host", "solaredge.host"),
@@ -153,6 +167,7 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                 "Operational",
                 (
                     WebField("Poll interval (s)", "poll_interval_s"),
+                    WebField("Decision interval (s)", "decision_interval_s"),
                     WebField("SQLite path", "storage.sqlite_path"),
                     WebField("History retention (days)", "storage.history_retention_days"),
                 ),

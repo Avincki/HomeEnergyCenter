@@ -57,6 +57,11 @@
         <div class="tile-value">{{ override.mode | upper }}</div>
         {% if override.expires_at %}<div class="tile-hint">until {{ override.expires_at.strftime("%H:%M") }}</div>{% endif %}
     </div>
+    <div class="tile">
+        <div class="tile-label">Expected solar today</div>
+        <div class="tile-value">{% if solar_today_kwh is not none %}{{ "%.1f" | format(solar_today_kwh) }} kWh{% else %}&mdash;{% endif %}</div>
+        <div class="tile-hint">forecast.solar</div>
+    </div>
 </section>
 
 <section>
@@ -64,7 +69,7 @@
     <div class="chart-card chart-card-tall">
         <canvas id="mainChart"></canvas>
     </div>
-    <p class="hint">Bars = injection &euro;/kWh (left axis; red = negative, accent outline = current hour). Line = battery SoC % (right axis).</p>
+    <p class="hint">Bars = injection &euro;/kWh (left axis; red = negative, accent outline = current hour). Line = battery SoC % (right axis). Filled orange = forecast solar power, summed across arrays (far right axis, kW).</p>
 </section>
 
 <section>

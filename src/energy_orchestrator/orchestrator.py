@@ -48,6 +48,12 @@ from energy_orchestrator.prices import (
     PriceProvider,
     create_price_provider,
 )
+from energy_orchestrator.solar import (
+    ForecastSolarProvider,
+    SolarCache,
+    SolarError,
+    SolarProvider,
+)
 from energy_orchestrator.web.override import OverrideController
 
 logger = structlog.stdlib.get_logger(__name__)
@@ -75,11 +81,13 @@ class TickLoop:
         session_factory: async_sessionmaker[AsyncSession],
         override_controller: OverrideController,
         price_cache: PriceCache,
+        solar_cache: SolarCache,
     ) -> None:
         self.config = config
         self._session_factory = session_factory
         self._override_controller = override_controller
         self._price_cache = price_cache
+        self._solar_cache = solar_cache
 
         self._sonnen = create_device_client(config.sonnen)
         self._car_charger = create_device_client(config.homewizard.car_charger)
@@ -93,6 +101,9 @@ class TickLoop:
             )
         self._solaredge: SolarEdgeClient = solaredge
         self._price_provider: PriceProvider = create_price_provider(config.prices)
+        self._solar_provider: SolarProvider | None = (
+            ForecastSolarProvider(config.solar) if config.solar is not None else None
+        )
         self._engine = DecisionEngine(config.decision)
 
         self._task: asyncio.Task[None] | None = None
@@ -127,6 +138,9 @@ class TickLoop:
                 await client.close()
         with contextlib.suppress(Exception):
             await self._price_provider.close()
+        if self._solar_provider is not None:
+            with contextlib.suppress(Exception):
+                await self._solar_provider.close()
 
     async def _run(self) -> None:
         # First tick happens immediately; subsequent ticks honour the interval.
@@ -163,6 +177,7 @@ class TickLoop:
             )
 
             await self._refresh_prices_if_stale(when)
+            await self._refresh_solar_if_stale(when)
             current_price = get_current_hour_price(self._price_cache.points(), when)
 
             reading = self._build_reading(when, sonnen_r, car_r, p1_r, small_r, current_price)
@@ -246,6 +261,29 @@ class TickLoop:
             return
         self._price_cache.replace(points, now)
         await self._record_status_success(SourceName.PRICES, {"hours": len(points)})
+
+    async def _refresh_solar_if_stale(self, now: datetime) -> None:
+        if self._solar_provider is None:
+            return
+        if not self._solar_cache.is_stale(now):
+            return
+        try:
+            forecast = await self._solar_provider.fetch_forecast()
+        except SolarError as e:
+            await self._record_status_error(SourceName.SOLAR_FORECAST, str(e))
+            return
+        except Exception as e:  # defensive
+            logger.exception("unexpected error fetching solar forecast")
+            await self._record_status_error(SourceName.SOLAR_FORECAST, f"unexpected: {e}")
+            return
+        self._solar_cache.replace(forecast, now)
+        await self._record_status_success(
+            SourceName.SOLAR_FORECAST,
+            {
+                "points": len(forecast.points),
+                "watt_hours_today": forecast.watt_hours_today,
+            },
+        )
 
     async def _actuate_solaredge(self, state: DecisionState) -> None:
         target = _ON_PCT if state is DecisionState.ON else _OFF_PCT

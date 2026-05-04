@@ -26,6 +26,7 @@ from energy_orchestrator.data import (
 from energy_orchestrator.monitoring import configure_logging
 from energy_orchestrator.orchestrator import TickLoop
 from energy_orchestrator.prices import PriceCache
+from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.web.api import router as api_router
 from energy_orchestrator.web.override import OverrideController
 from energy_orchestrator.web.views import router as views_router
@@ -46,11 +47,13 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
     session_factory = create_session_factory(db_engine)
     override_controller = OverrideController()
     price_cache = PriceCache()
+    solar_cache = SolarCache()
 
     app.state.db_engine = db_engine
     app.state.session_factory = session_factory
     app.state.override_controller = override_controller
     app.state.price_cache = price_cache
+    app.state.solar_cache = solar_cache
     app.state.session_started_at = datetime.now(UTC)
 
     tick_loop: TickLoop | None = None
@@ -60,6 +63,7 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
             session_factory=session_factory,
             override_controller=override_controller,
             price_cache=price_cache,
+            solar_cache=solar_cache,
         )
         await tick_loop.start()
     app.state.tick_loop = tick_loop

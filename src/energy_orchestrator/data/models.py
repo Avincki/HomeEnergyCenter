@@ -34,6 +34,7 @@ class SourceName(StrEnum):
     SMALL_SOLAR = "small_solar"
     SOLAREDGE = "solaredge"
     PRICES = "prices"
+    SOLAR_FORECAST = "solar_forecast"
 
 
 class Reading(Base):

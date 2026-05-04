@@ -19,12 +19,14 @@ from energy_orchestrator.gui.binding import (
     form_to_config,
     save_with_backup,
 )
+from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.web.api import _classify_source_status
 from energy_orchestrator.web.config_form import SECTIONS
 from energy_orchestrator.web.dependencies import (
     get_config,
     get_config_path,
     get_override_controller,
+    get_solar_cache,
     get_uow,
 )
 from energy_orchestrator.web.override import OverrideController
@@ -33,6 +35,7 @@ ConfigDep = Annotated[AppConfig, Depends(get_config)]
 ConfigPathDep = Annotated[Path | None, Depends(get_config_path)]
 UowDep = Annotated[UnitOfWork, Depends(get_uow)]
 OverrideDep = Annotated[OverrideController, Depends(get_override_controller)]
+SolarCacheDep = Annotated[SolarCache, Depends(get_solar_cache)]
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 _templates = Jinja2Templates(directory=_TEMPLATES_DIR)
@@ -56,11 +59,18 @@ async def dashboard(
     request: Request,
     uow: UowDep,
     controller: OverrideDep,
+    solar_cache: SolarCacheDep,
 ) -> HTMLResponse:
     async with uow:
         latest_reading = await uow.readings.latest()
         latest_decision = await uow.decisions.latest()
         recent_decisions = list(await uow.decisions.recent(hours=24))
+    forecast = solar_cache.forecast()
+    solar_today_kwh = (
+        forecast.watt_hours_today / 1000.0
+        if forecast is not None and forecast.watt_hours_today is not None
+        else None
+    )
     return _templates.TemplateResponse(
         request=request,
         name="dashboard.html",
@@ -69,6 +79,7 @@ async def dashboard(
             "decision": latest_decision,
             "recent_decisions": recent_decisions[-20:],
             "override": _override_summary(controller),
+            "solar_today_kwh": solar_today_kwh,
         },
     )
 
@@ -139,12 +150,13 @@ async def config_form(
 @router.post("/config", response_class=HTMLResponse)
 async def config_save(
     request: Request,
+    config: ConfigDep,
     config_path: ConfigPathDep,
 ) -> HTMLResponse:
     raw = await request.form()
     form = _form_from_post(raw)
 
-    new_config, errors = form_to_config(form)
+    new_config, errors = form_to_config(form, baseline=config)
     if errors or new_config is None:
         return _render_config_form(
             request=request,
@@ -272,6 +284,26 @@ def _config_view(config: AppConfig) -> dict[str, Any]:
             "injection_factor": config.prices.injection_factor,
             "injection_offset": config.prices.injection_offset,
         },
+        "solar": (
+            None
+            if config.solar is None
+            else {
+                "latitude": config.solar.latitude,
+                "longitude": config.solar.longitude,
+                "api_key": "***" if config.solar.api_key else None,
+                "damping_morning": config.solar.damping_morning,
+                "damping_evening": config.solar.damping_evening,
+                "planes": [
+                    {
+                        "name": p.name,
+                        "declination": p.declination,
+                        "azimuth": p.azimuth,
+                        "kwp": p.kwp,
+                    }
+                    for p in config.solar.planes
+                ],
+            }
+        ),
         "decision": {
             "battery_low_soc_pct": config.decision.battery_low_soc_pct,
             "battery_full_soc_pct": config.decision.battery_full_soc_pct,

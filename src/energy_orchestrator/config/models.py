@@ -140,6 +140,45 @@ class PricesConfig(_StrictModel):
         return self
 
 
+# ----- solar forecast ----------------------------------------------------------
+
+
+class SolarPlaneConfig(_StrictModel):
+    """One PV array. Forecast.Solar treats each plane as a separate API call."""
+
+    name: str = Field(default="", max_length=32, description="Display label, e.g. 'east'")
+    declination: int = Field(..., ge=0, le=90, description="Tilt from horizontal in degrees")
+    azimuth: int = Field(
+        ...,
+        ge=-180,
+        le=180,
+        description="Compass deviation from south: -90=east, 0=south, 90=west, 180=north",
+    )
+    kwp: float = Field(..., gt=0, le=1000, description="Peak nameplate output in kWp")
+
+
+class SolarConfig(_StrictModel):
+    """Forecast.Solar configuration. Free public tier needs no api_key."""
+
+    latitude: float = Field(..., ge=-90.0, le=90.0)
+    longitude: float = Field(..., ge=-180.0, le=180.0)
+    api_key: SecretStr | None = None
+    planes: tuple[SolarPlaneConfig, ...] = Field(
+        default_factory=tuple,
+        description="One entry per array. Forecast.Solar free tier supports up to 4.",
+    )
+    damping_morning: float = Field(default=0.0, ge=0.0, le=1.0)
+    damping_evening: float = Field(default=0.0, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _at_least_one_plane(self) -> SolarConfig:
+        if len(self.planes) == 0:
+            raise ValueError("solar.planes must contain at least one plane")
+        if len(self.planes) > 4:
+            raise ValueError("solar.planes: at most 4 planes (Forecast.Solar limit)")
+        return self
+
+
 # ----- decision / storage / logging / web -------------------------------------
 
 
@@ -190,6 +229,7 @@ class AppConfig(_StrictModel):
     homewizard: HomeWizardConfig
     solaredge: SolarEdgeConfig
     prices: PricesConfig
+    solar: SolarConfig | None = None
     decision: DecisionConfig = Field(default_factory=DecisionConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)

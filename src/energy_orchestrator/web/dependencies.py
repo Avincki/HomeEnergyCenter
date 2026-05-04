@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from energy_orchestrator.config.models import AppConfig
 from energy_orchestrator.data import UnitOfWork
 from energy_orchestrator.prices import PriceCache
+from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.web.override import OverrideController
 
 
@@ -35,6 +36,10 @@ def get_override_controller(request: Request) -> OverrideController:
 
 def get_price_cache(request: Request) -> PriceCache:
     return request.app.state.price_cache  # type: ignore[no-any-return]
+
+
+def get_solar_cache(request: Request) -> SolarCache:
+    return request.app.state.solar_cache  # type: ignore[no-any-return]
 
 
 def get_uow(request: Request) -> UnitOfWork:

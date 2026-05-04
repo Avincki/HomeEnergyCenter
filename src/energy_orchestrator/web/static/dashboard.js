@@ -10,6 +10,8 @@
     const COLOR_NEG = "rgba(239, 68, 68, 0.75)";
     const COLOR_CURRENT = "rgba(56, 189, 248, 0.85)";
     const COLOR_SOC = "#22c55e";
+    const COLOR_SOLAR_FILL = "rgba(251, 146, 60, 0.30)";
+    const COLOR_SOLAR_LINE = "rgba(251, 146, 60, 0.85)";
     const TEXT_MUTED = "#94a3b8";
     const TEXT_BODY = "#e2e8f0";
     const GRID_FAINT = "rgba(148, 163, 184, 0.15)";
@@ -37,7 +39,7 @@
         parent.replaceChild(note, canvas);
     }
 
-    function renderCombined(canvas, prices, readings) {
+    function renderCombined(canvas, prices, readings, solarPoints) {
         const now = new Date();
 
         // Lock the x-axis to today's local 00:00 -> 24:00 window.
@@ -70,6 +72,11 @@
                 y: r.battery_soc_pct,
             }));
 
+        const solarLine = (solarPoints || []).map(p => ({
+            x: new Date(p.timestamp).valueOf(),
+            y: p.watts / 1000.0,  // chart axis is in kW for readable numbers
+        }));
+
         return new Chart(canvas, {
             data: {
                 datasets: [
@@ -83,6 +90,20 @@
                         yAxisID: "yPrice",
                         // 1 hour wide — matches the price-point hour resolution.
                         barThickness: "flex",
+                        order: 3,
+                    },
+                    {
+                        type: "line",
+                        label: "Forecast solar (kW)",
+                        data: solarLine,
+                        borderColor: COLOR_SOLAR_LINE,
+                        backgroundColor: COLOR_SOLAR_FILL,
+                        borderWidth: 1.5,
+                        pointRadius: 0,
+                        tension: 0.35,
+                        fill: "origin",
+                        spanGaps: true,
+                        yAxisID: "ySolar",
                         order: 2,
                     },
                     {
@@ -120,6 +141,9 @@
                                 if (ctx.dataset.yAxisID === "yPrice") {
                                     return `Injection ${ctx.parsed.y.toFixed(4)} €/kWh`;
                                 }
+                                if (ctx.dataset.yAxisID === "ySolar") {
+                                    return `Solar ${ctx.parsed.y.toFixed(2)} kW`;
+                                }
                                 return `SoC ${ctx.parsed.y.toFixed(1)} %`;
                             },
                         },
@@ -151,6 +175,13 @@
                         min: 0,
                         max: 100,
                         title: { display: true, text: "SoC %", color: TEXT_MUTED },
+                        ticks: { color: TEXT_MUTED },
+                        grid: { display: false },
+                    },
+                    ySolar: {
+                        position: "right",
+                        min: 0,
+                        title: { display: true, text: "Solar kW", color: TEXT_MUTED },
                         ticks: { color: TEXT_MUTED },
                         grid: { display: false },
                     },
@@ -235,23 +266,26 @@
 
         let prices = [];
         let history = { readings: [] };
+        let solarPoints = [];
         try {
-            const [priceJson, historyJson] = await Promise.all([
+            const [priceJson, historyJson, solarJson] = await Promise.all([
                 fetchJson("/api/prices"),
                 fetchJson("/api/history?h=24"),
+                fetchJson("/api/solar"),
             ]);
             prices = priceJson.prices || [];
             history = historyJson;
+            solarPoints = (solarJson && solarJson.points) || [];
         } catch (e) {
             console.warn("Dashboard chart data fetch failed", e);
         }
 
         const readings = history.readings || [];
-        if (prices.length === 0 && readings.length === 0) {
-            showEmpty(canvas, "No prices or SoC history yet — waiting for tick loop.");
+        if (prices.length === 0 && readings.length === 0 && solarPoints.length === 0) {
+            showEmpty(canvas, "No prices, SoC history, or solar forecast yet — waiting for tick loop.");
             return;
         }
-        renderCombined(canvas, prices, readings);
+        renderCombined(canvas, prices, readings, solarPoints);
     }
 
     if (document.readyState === "loading") {

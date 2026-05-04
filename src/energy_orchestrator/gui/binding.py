@@ -66,6 +66,11 @@ def config_to_form(config: AppConfig) -> AppConfigForm:
     enums use their ``.value``; paths are rendered as POSIX strings.
     """
     nested = config.model_dump(mode="python")
+    # Drop optional top-level sections that the web form doesn't render
+    # (currently just ``solar``). Otherwise _flatten would emit them as
+    # ``solar: ""`` and form_to_config would feed that back to Pydantic,
+    # which rejects empty-string-as-SolarConfig.
+    nested.pop("solar", None)
     flat: AppConfigForm = {}
     _flatten(nested, prefix=(), out=flat)
     # model_dump leaves SecretStr as objects — unwrap.
@@ -75,13 +80,18 @@ def config_to_form(config: AppConfig) -> AppConfigForm:
     return flat
 
 
-def form_to_config(form: AppConfigForm) -> tuple[AppConfig | None, FormErrors]:
+def form_to_config(
+    form: AppConfigForm, *, baseline: AppConfig | None = None
+) -> tuple[AppConfig | None, FormErrors]:
     """Build an :class:`AppConfig` from a flat form dict.
 
     Returns ``(config, {})`` on success, or ``(None, errors)`` mapping each
     failing dotted path to its Pydantic error message. Empty strings on
     optional fields (auth_token, api_key, csv_path) become ``None`` so
     Pydantic's ``Optional`` defaults take effect.
+
+    Sections not represented in the form (``solar``) are carried over from
+    ``baseline`` so a web-form save doesn't silently drop YAML-only config.
     """
     nested: dict[str, Any] = {}
     for key, raw_value in form.items():
@@ -93,6 +103,29 @@ def form_to_config(form: AppConfigForm) -> tuple[AppConfig | None, FormErrors]:
         ):
             value = None
         _set_nested(nested, key.split("."), value)
+
+    if baseline is not None and baseline.solar is not None and "solar" not in nested:
+        # Preserve the YAML-only solar section through web-form saves.
+        nested["solar"] = {
+            "latitude": baseline.solar.latitude,
+            "longitude": baseline.solar.longitude,
+            "api_key": (
+                baseline.solar.api_key.get_secret_value()
+                if baseline.solar.api_key is not None
+                else None
+            ),
+            "damping_morning": baseline.solar.damping_morning,
+            "damping_evening": baseline.solar.damping_evening,
+            "planes": [
+                {
+                    "name": p.name,
+                    "declination": p.declination,
+                    "azimuth": p.azimuth,
+                    "kwp": p.kwp,
+                }
+                for p in baseline.solar.planes
+            ],
+        }
 
     try:
         config = AppConfig.model_validate(nested)
@@ -186,7 +219,7 @@ def _validation_errors_by_field(exc: ValidationError) -> FormErrors:
 
 def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
     """Walk AppConfig manually so SecretStr/Path/Enum get correct shapes."""
-    return {
+    out: dict[str, Any] = {
         "poll_interval_s": config.poll_interval_s,
         "sonnen": {
             "host": config.sonnen.host,
@@ -255,6 +288,24 @@ def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
             "port": config.web.port,
         },
     }
+    if config.solar is not None:
+        out["solar"] = {
+            "latitude": config.solar.latitude,
+            "longitude": config.solar.longitude,
+            "api_key": _secret_or_none(config.solar.api_key),
+            "damping_morning": config.solar.damping_morning,
+            "damping_evening": config.solar.damping_evening,
+            "planes": [
+                {
+                    "name": plane.name,
+                    "declination": plane.declination,
+                    "azimuth": plane.azimuth,
+                    "kwp": plane.kwp,
+                }
+                for plane in config.solar.planes
+            ],
+        }
+    return out
 
 
 def _secret_or_none(value: SecretStr | None) -> str | None:

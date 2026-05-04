@@ -38,6 +38,7 @@ from energy_orchestrator.devices import DeviceReading
 from energy_orchestrator.devices.errors import DeviceConnectionError
 from energy_orchestrator.orchestrator import TickLoop
 from energy_orchestrator.prices import PriceCache, PriceFetchError, PricePoint
+from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.web.override import OverrideController
 
 # ----- shared fixtures + fakes -------------------------------------------------
@@ -184,7 +185,7 @@ async def test_tick_persists_reading_and_decision(
 ) -> None:
     config = _config(tmp_path)
     cache = PriceCache()
-    loop = TickLoop(config, session_factory, OverrideController(), cache)
+    loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
 
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
     _install_fakes(
@@ -221,7 +222,9 @@ async def test_tick_persists_reading_and_decision(
     assert latest_decision is not None
     assert latest_decision.state == DecisionState.ON.value
     assert latest_decision.rule_fired == "positive_injection_price"
-    assert {s.value for s in SourceName} <= set(sources.keys())
+    # solar_forecast is conditional on solar config being present
+    expected = {s.value for s in SourceName} - {SourceName.SOLAR_FORECAST.value}
+    assert expected <= set(sources.keys())
 
 
 async def test_tick_skips_decision_when_sonnen_unreadable(
@@ -230,7 +233,7 @@ async def test_tick_skips_decision_when_sonnen_unreadable(
 ) -> None:
     config = _config(tmp_path)
     cache = PriceCache()
-    loop = TickLoop(config, session_factory, OverrideController(), cache)
+    loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
     _install_fakes(
         loop,
@@ -263,7 +266,7 @@ async def test_tick_actuates_solaredge_on_state_change_when_not_dry_run(
 ) -> None:
     config = _config(tmp_path, dry_run=False)
     cache = PriceCache()
-    loop = TickLoop(config, session_factory, OverrideController(), cache)
+    loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
     fake_se = FakeSolarEdge()
     _install_fakes(
@@ -287,7 +290,7 @@ async def test_tick_does_not_actuate_in_dry_run(
 ) -> None:
     config = _config(tmp_path, dry_run=True)
     cache = PriceCache()
-    loop = TickLoop(config, session_factory, OverrideController(), cache)
+    loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
     fake_se = FakeSolarEdge()
     _install_fakes(
@@ -310,7 +313,7 @@ async def test_tick_does_not_actuate_when_state_unchanged(
 ) -> None:
     config = _config(tmp_path, dry_run=False)
     cache = PriceCache()
-    loop = TickLoop(config, session_factory, OverrideController(), cache)
+    loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
     fake_se = FakeSolarEdge()
     _install_fakes(
@@ -345,7 +348,7 @@ async def test_tick_refreshes_price_cache_when_stale(
 ) -> None:
     config = _config(tmp_path)
     cache = PriceCache()
-    loop = TickLoop(config, session_factory, OverrideController(), cache)
+    loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
     provider = FakeProvider([_hour_price(now, injection=0.07)])
     _install_fakes(
@@ -373,7 +376,7 @@ async def test_tick_records_price_fetch_error(
 ) -> None:
     config = _config(tmp_path)
     cache = PriceCache()
-    loop = TickLoop(config, session_factory, OverrideController(), cache)
+    loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
     _install_fakes(
         loop,

@@ -32,10 +32,12 @@ from energy_orchestrator.data.models import (
     SourceStatus,
 )
 from energy_orchestrator.prices import PriceCache
+from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.web.dependencies import (
     get_config,
     get_override_controller,
     get_price_cache,
+    get_solar_cache,
     get_uow,
 )
 from energy_orchestrator.web.override import OverrideController
@@ -44,6 +46,7 @@ ConfigDep = Annotated[AppConfig, Depends(get_config)]
 UowDep = Annotated[UnitOfWork, Depends(get_uow)]
 OverrideDep = Annotated[OverrideController, Depends(get_override_controller)]
 PriceCacheDep = Annotated[PriceCache, Depends(get_price_cache)]
+SolarCacheDep = Annotated[SolarCache, Depends(get_solar_cache)]
 
 router = APIRouter(prefix="/api")
 
@@ -248,6 +251,55 @@ async def get_prices(price_cache: PriceCacheDep) -> dict[str, Any]:
             }
             for p in points
         ],
+    }
+
+
+@router.get("/solar")
+async def get_solar(solar_cache: SolarCacheDep) -> dict[str, Any]:
+    """Return cached Forecast.Solar output: hourly summed-watts time series for
+    today + tomorrow plus per-plane breakdown and today's expected total kWh.
+
+    The cache is populated by the orchestrator tick loop (every ~30 min).
+    Until the first successful fetch this returns an empty payload with
+    ``last_refresh: null``.
+    """
+    now = datetime.now(UTC)
+    start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end = start + timedelta(days=2)
+    forecast = solar_cache.forecast()
+    if forecast is None:
+        return {
+            "last_refresh": None,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "watt_hours_today": None,
+            "watt_hours_tomorrow": None,
+            "points": [],
+            "per_plane": {},
+        }
+    points = [
+        {"timestamp": p.timestamp.isoformat(), "watts": p.watts}
+        for p in forecast.points
+        if start <= p.timestamp < end
+    ]
+    per_plane = {
+        name: [
+            {"timestamp": p.timestamp.isoformat(), "watts": p.watts}
+            for p in series
+            if start <= p.timestamp < end
+        ]
+        for name, series in forecast.per_plane.items()
+    }
+    return {
+        "last_refresh": (
+            solar_cache.last_refresh.isoformat() if solar_cache.last_refresh else None
+        ),
+        "window_start": start.isoformat(),
+        "window_end": end.isoformat(),
+        "watt_hours_today": forecast.watt_hours_today,
+        "watt_hours_tomorrow": forecast.watt_hours_tomorrow,
+        "points": points,
+        "per_plane": per_plane,
     }
 
 

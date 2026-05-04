@@ -139,7 +139,15 @@ async def test_health_lists_all_expected_sources(client: AsyncClient) -> None:
     resp = await client.get("/api/health")
     body = resp.json()
     names = {s["source_name"] for s in body["sources"]}
-    assert names == {"sonnen", "car_charger", "p1_meter", "small_solar", "solaredge", "prices"}
+    assert names == {
+        "sonnen",
+        "car_charger",
+        "p1_meter",
+        "small_solar",
+        "solaredge",
+        "prices",
+        "solar_forecast",
+    }
     assert body["status"] == "degraded"  # all UNKNOWN
     assert body["dry_run"] is True
 
@@ -155,6 +163,7 @@ async def test_health_ok_when_recent_success(client: AsyncClient) -> None:
             SourceName.SMALL_SOLAR,
             SourceName.SOLAREDGE,
             SourceName.PRICES,
+            SourceName.SOLAR_FORECAST,
         ):
             await uow.source_status.record_success(name, payload={"ok": True})
         await uow.commit()

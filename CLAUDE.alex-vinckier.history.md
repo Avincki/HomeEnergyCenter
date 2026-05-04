@@ -807,3 +807,164 @@ migration self-diagnosing from `/logs` alone. Otherwise: hot-reload
 on config save (still highest leverage), Phase 13 (test coverage,
 including SSE generator tests), Phase 14 (mkdocs), Swagger UI
 vendoring if offline operation matters.
+
+## 2026-05-04 (afternoon) — Forecast.Solar integration: provider, API, dashboard overlay, KPI tile
+
+User's site has two PV arrays at 45° tilt — east 6.0 kWp (azimuth -90°) and
+west 6.5 kWp (azimuth 90°), both in Gent. They wanted a daily-total kWh
+estimate on the dashboard plus a power-curve overlay on the existing
+price/SoC chart. Started from a "which web service?" question, ended
+with a working overlay reading **25.4 kWh today / 21.5 kWh tomorrow**
+on a live API call.
+
+### Provider choice
+
+Compared Forecast.Solar / Solcast / Open-Meteo. Picked **Forecast.Solar
+free public tier** because it returns PV power directly (no irradiance
+math), no key needed, and one URL per plane (`/estimate/{lat}/{lon}/
+{decl}/{az}/{kwp}`). Rate limit is **rolling 60-min window**, ~12/hour
+for the free tier — confirmed via `result.message.ratelimit` in the
+response body (no HTTP header). 2 planes × 2 fetches/day = 4 calls,
+well inside any threshold; the cache is set to 30 min anyway since
+weather updates ~hourly and they ask not to poll < 15 min.
+
+User initially wrote `6500 kWp` / `6000 kWp` — 6.5 MW utility scale —
+caught and clarified to **6500 Wp / 6000 Wp** = 6.5 / 6.0 kWp.
+Forecast.Solar's URL slot is in kWp so config stores `6.5` and `6.0`
+verbatim.
+
+### Architecture
+
+New `solar/` sub-package mirroring `prices/`:
+
+- `base.py` — `SolarPoint` (UTC tz-aware, watts), `SolarForecast`
+  (summed series + per-plane breakdown + today/tomorrow Wh totals),
+  `SolarProvider` ABC, `SolarError`/`SolarFetchError`/`SolarParseError`,
+  and `sum_planes()` which buckets by timestamp so missing-plane
+  hours just contribute 0 W.
+- `cache.py` — `SolarCache` with the same single-writer pattern as
+  `PriceCache`; `_MAX_AGE = 30 min`.
+- `forecast_solar_provider.py` — `aiohttp.gather` over planes,
+  `return_exceptions=True` so one failed plane doesn't poison the
+  others (logs a warning, sums what's left). Surfaces remaining
+  rate budget at debug level.
+
+`config.SolarConfig` is **optional** (`AppConfig.solar: SolarConfig | None
+= None`), so omitting the section disables the feature and existing
+deployments aren't forced to take a dependency. `SolarPlaneConfig` has
+`name`/`declination`/`azimuth`/`kwp` with the standard convention
+(`-90 = east, 0 = south, 90 = west`); the model validates 1–4 planes
+(Forecast.Solar's hard limit).
+
+Tick loop took a fifth constructor arg (`solar_cache: SolarCache`) and
+gained `_refresh_solar_if_stale(now)` running after the price refresh.
+When `_solar_provider is None` the method short-circuits — that's how
+the "no solar config" path stays a no-op. New `SourceName.SOLAR_FORECAST`
+shows up in `/api/health` and the debug board, classified by the same
+OK/DEGRADED/ERROR rules as the rest.
+
+### Web layer
+
+- `GET /api/solar` — returns `{last_refresh, window_start, window_end,
+  watt_hours_today, watt_hours_tomorrow, points: [{timestamp, watts}],
+  per_plane: {<name>: [...]}}`. Shape mirrors `/api/prices`.
+- Dashboard view passes `solar_today_kwh = wh_today / 1000` to the
+  template; new tile renders `25.4 kWh` (or `—` when the cache is
+  empty). Hint text is `forecast.solar` so the source is obvious.
+- Chart got a third dataset: filled curve in
+  `rgba(251,146,60,0.30)` fill / `0.85` border, on a new
+  `position: "right"` `ySolar` axis labelled "Solar kW". `kW` not `W`
+  to keep numbers readable. Tooltip `label` cb branches by `yAxisID`
+  for all three series (price / SoC / solar).
+
+### Two issues caught + fixed mid-session
+
+1. **Web-form save would wipe `solar:` from YAML.** The form-section
+   list (`config_form.py`) intentionally doesn't include solar — too
+   much complexity to build a UI for a list-of-planes. But
+   `_config_to_plain_dict` re-emits the entire `AppConfig` to YAML,
+   and the form-rebuilt config has `solar=None`, so any web save
+   would silently drop the section. **Fix:** `form_to_config` now
+   takes a `baseline: AppConfig | None` kwarg; when the form omits
+   `solar`, the baseline's solar is grafted into the validation
+   dict. The `/config` POST handler passes the current `ConfigDep`
+   as the baseline.
+2. **`_flatten` emitted `solar: ""` when solar was None.** Tripped the
+   gui-binding round-trip test (Pydantic rejected the empty string as
+   a `SolarConfig`). Fixed by popping the `solar` key from
+   `model_dump()` in `config_to_form` before flattening — same idea
+   as #1, just on the read path.
+
+### tzdata gotcha (and the proper fix)
+
+Forecast.Solar returns naive `"YYYY-MM-DD HH:MM:SS"` strings in the
+**location's local timezone** (Brussels for our coords). First pass
+used `ZoneInfo("Europe/Brussels")` which on Windows requires the
+optional `tzdata` wheel (Linux/macOS pulls it from the system). User
+ran uvicorn under their **system Python** rather than the project
+`.venv` and got a startup crash:
+
+```
+zoneinfo._common.ZoneInfoNotFoundError: 'No time zone found with key
+Europe/Brussels'
+```
+
+Adding `tzdata` to `pyproject.toml` covers `pip install -e .` users,
+but doesn't help anyone running an arbitrary Python. **Proper fix:** a
+20-line `_EuropeBrusselsFallback(tzinfo)` in `forecast_solar_provider.py`
+implementing the EU DST rule directly (CEST/UTC+2 from last-Sunday-March
+02:00 local to last-Sunday-October 03:00 local; CET/UTC+1 otherwise).
+`_resolve_local_tz` prefers `ZoneInfo` and falls back to the custom tz
+when `ZoneInfoNotFoundError` fires. Verified roundtrip:
+- May 13:00 local → 11:00 UTC (CEST) ✓
+- December 13:00 local → 12:00 UTC (CET) ✓
+
+The `tzdata` declaration stays in `pyproject.toml` as belt-and-braces.
+
+### Tests
+
+All 250 pass. Three test fixups needed:
+
+- `tests/integration/test_web_app.py` — `test_health_lists_all_expected_sources`
+  and `test_health_ok_when_recent_success` had hardcoded source-name
+  sets; added `solar_forecast`.
+- `tests/unit/test_orchestrator.py` — `TickLoop` ctor gained an arg, so
+  every call site (7 of them) now passes `SolarCache()` as the fifth
+  positional. The "all SourceName values got recorded" assertion in
+  `test_tick_persists_reading_and_decision` was relaxed to subtract
+  `SOLAR_FORECAST` (test config has no solar, so the source is
+  legitimately UNKNOWN).
+
+### State at end-of-session
+
+- 14 files modified, 1 new sub-package (`src/energy_orchestrator/solar/`),
+  ~307 / −18 lines. All 250 tests pass.
+- Live verified end-to-end against the real Forecast.Solar API:
+  25,443 Wh today, 21,491 Wh tomorrow, 34 hourly points (today + part
+  of tomorrow, sunrise to sunset). Peak summed power only ~2.9 kW
+  because E/W arrays peak at different hours so they don't fully
+  stack — that's geometry, not a bug.
+- Pre-existing circular import (`orchestrator → web.override → web.__init__
+  → web.app → orchestrator`) only manifests when `tests/unit/test_orchestrator.py`
+  is loaded first by pytest. Not addressed this session.
+
+### Reusable nuggets
+
+- **Forecast.Solar puts rate-limit info in the JSON body**, not HTTP
+  headers — `result.message.ratelimit.{period,limit,remaining}`.
+  Easy to miss. Logged at debug so the throttle ceiling is visible
+  without spamming INFO.
+- **Forecast.Solar timestamps are local at the lat/lon, not UTC.**
+  The "time_utc" key is only in the message envelope, not in
+  per-point keys. So you must know the location's timezone to parse
+  the data series at all. That's why a Belgium-without-tzdata install
+  had to crash before the fallback existed.
+- **`zoneinfo` on Windows needs `tzdata`** (PyPI wheel) unless the user
+  has Python 3.13+ which started bundling it. Worth keeping a
+  stdlib-only DST fallback for pinned-region features so deploy
+  environments don't have to know.
+- **Pydantic `frozen=True` models can't be mutated to "preserve a
+  field through a save."** Either pass a baseline through the
+  validation builder (what I did) or use `model_copy(update=...)`.
+  The baseline approach keeps the failure mode in front of the
+  validator instead of after it.

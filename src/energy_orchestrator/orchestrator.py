@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -59,6 +60,7 @@ from energy_orchestrator.solar import (
     ForecastSolarProvider,
     SolarCache,
     SolarError,
+    SolarForecast,
     SolarProvider,
 )
 from energy_orchestrator.web.override import OverrideController
@@ -308,6 +310,7 @@ class TickLoop:
             await self._record_status_error(SourceName.PRICES, f"unexpected: {e}")
             return
         self._price_cache.replace(points, now)
+        await self._persist_prices(points)
         await self._record_status_success(SourceName.PRICES, {"hours": len(points)})
 
     async def _refresh_solar_if_stale(self, now: datetime) -> None:
@@ -325,6 +328,7 @@ class TickLoop:
             await self._record_status_error(SourceName.SOLAR_FORECAST, f"unexpected: {e}")
             return
         self._solar_cache.replace(forecast, now)
+        await self._persist_solar_forecast(forecast)
         await self._record_status_success(
             SourceName.SOLAR_FORECAST,
             {
@@ -332,6 +336,42 @@ class TickLoop:
                 "watt_hours_today": forecast.watt_hours_today,
             },
         )
+
+    async def _persist_prices(self, points: Sequence[PricePoint]) -> None:
+        if not points:
+            return
+        rows = [
+            (p.timestamp, p.consumption_eur_per_kwh, p.injection_eur_per_kwh)
+            for p in points
+        ]
+        try:
+            async with UnitOfWork(self._session_factory) as uow:
+                await uow.price_points.upsert_many(rows)
+                await uow.commit()
+        except Exception:  # never let history bookkeeping kill the tick
+            logger.exception("price-points persistence failed")
+
+    async def _persist_solar_forecast(self, forecast: SolarForecast) -> None:
+        if not forecast.per_plane and not forecast.points:
+            return
+        # Prefer the per-plane breakdown so historic days can be summed back
+        # together on read; fall back to a synthetic ``_total`` plane when a
+        # provider only returns the aggregate.
+        if forecast.per_plane:
+            per_plane = {
+                name: [(p.timestamp, p.watts) for p in series]
+                for name, series in forecast.per_plane.items()
+            }
+        else:
+            per_plane = {
+                "_total": [(p.timestamp, p.watts) for p in forecast.points],
+            }
+        try:
+            async with UnitOfWork(self._session_factory) as uow:
+                await uow.solar_forecast.upsert_per_plane(per_plane)
+                await uow.commit()
+        except Exception:  # never let history bookkeeping kill the tick
+            logger.exception("solar-forecast persistence failed")
 
     async def _actuate_solaredge(self, state: DecisionState) -> None:
         target = _ON_PCT if state is DecisionState.ON else _OFF_PCT

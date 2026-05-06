@@ -1231,3 +1231,125 @@ total-solar curve reuses the exact same trick.
   the visible host field is empty). Otherwise `_flatten` and
   `_set_nested` happily produce a placeholder dict that fails
   validation with a confusing message.
+
+## 2026-05-06 — Persisted prices/solar, date-navigable chart, line-gap polish
+
+Two-feature session: the dashboard chart now lets you walk back through
+past days, and the SoC / total-solar curves break across genuine data
+gaps instead of bridging them. Also a brief diagnostic detour where the
+user thought yesterday's predicted-solar was identical to today's.
+
+### Persistence: prices + forecast.solar points
+
+Until now `/api/prices` and `/api/solar` were served only from the
+in-memory caches the tick loop refreshes — fine for "today" but the
+moment you rolled past midnight, yesterday's bars/curve disappeared.
+Added a new alembic migration `0003_persist_prices_and_solar.py` plus
+two SQLAlchemy models:
+
+- `price_points` — PK `(timestamp,)`, `consumption_eur_per_kwh` and
+  `injection_eur_per_kwh` nullable. Each provider refresh upserts
+  today/tomorrow rows in place.
+- `solar_forecast_points` — PK `(timestamp, plane)`, `watts` non-null.
+  The summed-across-planes series is **derived on read** by summing
+  rows that share a timestamp; that lets a future config add/remove
+  planes without a schema change. When a provider only returns the
+  aggregate, the orchestrator stores it under a synthetic
+  `_total` plane so the same read path still works.
+
+Wired `PricePointsRepository` and `SolarForecastRepository` (with
+`upsert_many` / `upsert_per_plane` using sqlite's
+`on_conflict_do_update`) into `UnitOfWork`, and added two
+`_persist_*` helpers in the tick loop that fire after each successful
+cache refresh. Both are wrapped in their own `try/except Exception`
+that **only logs** — bookkeeping must never kill the tick. New repos
+also got `prune(retention_days)` so the same retention story applies.
+
+### Date-navigable chart (Prev / Today / Next)
+
+`/api/{prices,solar,history}` all gained a `?date=YYYY-MM-DD` query
+param interpreted as a **server-local calendar day**. New helper
+`_local_day_window(date_str)` parses the date with `astimezone()` (no
+arg attaches the system tz), shifts to UTC at the storage boundary,
+and returns `[start, end)`. Without the param, the cache-backed code
+path stays exactly as before — the date branch is purely additive.
+
+For prices specifically the persisted-window read widens by ±1 day
+to mirror the cache's "yesterday + today + tomorrow" slop, otherwise
+chart bars near midnight go missing in non-UTC zones (we already
+learned this lesson client-side in the previous session). Solar
+historic days don't have meaningful `watt_hours_today` totals, so
+those fields come back as `null` and the tile shows `—`.
+
+Dashboard side: three small buttons under the chart heading
+(`#chart-prev`, `#chart-today`, `#chart-next`) plus a date label
+(`#chart-date`). State lives in a single mutable
+`viewedDate = startOfLocalDay(new Date())`. `buildChartUrls()` returns
+the cache-backed URLs only when `isViewingToday()`; otherwise it
+appends the encoded date. `navigateTo(newDate)` stops the polling
+timer (history is immutable), refreshes once, then restarts polling
+**only** if the new date is today and the tab is visible. The Next
+button is disabled at today since there's nothing recorded ahead.
+Existing chart `scales.x.{min,max}` already locks to the viewed day's
+00:00→24:00, so reusing it for past days was a one-line free win.
+
+### Solar forecast "double check" detour
+
+User: "the predicted-solar chart of yesterday looks identical to
+today's." Dumped `solar_forecast_points` for both days side-by-side:
+30 hourly points, mean ratio today/yesterday **1.019 ± 0.028** —
+small but real per-hour deltas, and tomorrow's curve is +27 % higher
+at peak so the upsert path is clearly hitting separate days. The
+visual identity is just Forecast.Solar predicting near-identical
+weather two days running, plus the natural ~0.5 %/day clear-sky
+drift in May. No code change. Worth keeping in mind for later: if
+someone reports "stuck" historic forecasts again, log raw API
+responses for a couple of days first before assuming a bug.
+
+### SoC + total-solar line gap-breaks
+
+The two measured curves used `spanGaps: true`, which silently
+bridges across offline windows. Switched both (and their dark
+contrast halos) to `spanGaps: MAX_LINE_GAP_MS = 90 * 1000` — three
+times the orchestrator's 30 s poll, so a single dropped sample
+doesn't flicker but a real outage shows. Also stopped
+`.filter()`-ing missing samples out of the data array;
+`buildChartData` now emits `{x, y: null}` for `battery_soc_pct == null`
+and for readings where neither solar meter reported. Forecast solar
+keeps `spanGaps: true` since it's a smooth hourly model curve, not a
+sampled measurement, and gaps there are expected at sunrise/sunset.
+
+While in the area, the user also asked to clamp `ySolar` to a fixed
+**0–10 kW** range so the line height is comparable across days
+regardless of which kWp peak that day actually hit.
+
+### Reusable nuggets
+
+- **"Stuck data" is usually similar weather.** Before chasing a bug
+  in a forecast/prediction pipeline, dump the underlying numeric
+  series across days and look at the per-point delta. A ~1 %
+  consistent ratio is what near-identical clear-sky forecasts look
+  like; a 0 % delta on every point would be the actual bug
+  signature.
+- **`spanGaps` accepts a number for time-axis line charts.** Reads
+  as "max ms gap to bridge" and coexists with the null-y break, so
+  you get *both* "single missing field → break" and "no reading at
+  all for ≥ N ms → break" out of one knob. Pick the threshold off
+  the source data's cadence (~3× the poll interval is a good
+  default).
+- **Free additive-only API params.** `?date=YYYY-MM-DD` slots in
+  next to `h=` on `/api/history` without breaking any existing
+  caller — the cache-backed path is the default branch and the
+  date branch is purely opt-in. Same shape, same fields, just the
+  data window changes.
+- **Bookkeeping persistence must be belt-and-braces.** Every new
+  `_persist_*` in the tick loop is wrapped in a top-level
+  `except Exception` that *only logs*; a sqlite hiccup or a
+  schema mismatch on a stale DB must never block the next device
+  poll or actuation. Pattern repeats `_persist_prices` and
+  `_persist_solar_forecast` verbatim.
+- **Per-plane stored, summed on read.** Storing the aggregate
+  series only would have saved one DB write but made it impossible
+  to add or rename a plane without rewriting historic rows. The
+  composite `(timestamp, plane)` PK + sum-on-read keeps schema
+  stable through config changes.

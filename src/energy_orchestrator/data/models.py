@@ -91,3 +91,33 @@ class SourceStatus(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_utcnow, onupdate=_utcnow, nullable=False
     )
+
+
+class PricePointRow(Base):
+    """One hour of day-ahead price persisted to disk so historic chart days
+    can render bars even after the in-memory cache rolls over.
+
+    ``timestamp`` is the UTC start of the hour and serves as primary key —
+    each refresh upserts the same rows for today/tomorrow."""
+
+    __tablename__ = "price_points"
+
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    consumption_eur_per_kwh: Mapped[float | None] = mapped_column(Float, nullable=True)
+    injection_eur_per_kwh: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class SolarForecastPointRow(Base):
+    """One forecast.solar bucket per plane per timestamp.
+
+    ``plane`` holds the configured plane name (e.g. ``east``, ``west``); the
+    aggregate "summed across planes" series is reconstructed on read by
+    summing rows that share a timestamp. PK is composite ``(timestamp, plane)``
+    so each refresh upserts the same row for the next 48 h while keeping past
+    days that have rolled out of the upstream window."""
+
+    __tablename__ = "solar_forecast_points"
+
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), primary_key=True)
+    plane: Mapped[str] = mapped_column(String(64), primary_key=True)
+    watts: Mapped[float] = mapped_column(Float, nullable=False)

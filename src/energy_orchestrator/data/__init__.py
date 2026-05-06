@@ -10,14 +10,18 @@ from energy_orchestrator.data.models import (
     Decision,
     DecisionState,
     OverrideMode,
+    PricePointRow,
     Reading,
+    SolarForecastPointRow,
     SourceName,
     SourceStatus,
 )
 from energy_orchestrator.data.repositories import (
     BaseRepository,
     DecisionsRepository,
+    PricePointsRepository,
     ReadingsRepository,
+    SolarForecastRepository,
     SourceStatusRepository,
 )
 from energy_orchestrator.data.unit_of_work import UnitOfWork
@@ -29,8 +33,12 @@ __all__ = [
     "DecisionState",
     "DecisionsRepository",
     "OverrideMode",
+    "PricePointRow",
+    "PricePointsRepository",
     "Reading",
     "ReadingsRepository",
+    "SolarForecastPointRow",
+    "SolarForecastRepository",
     "SourceName",
     "SourceStatus",
     "SourceStatusRepository",

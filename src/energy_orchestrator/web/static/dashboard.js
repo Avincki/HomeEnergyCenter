@@ -30,8 +30,43 @@
     const GRID_FAINT = "rgba(148, 163, 184, 0.15)";
 
     const REFRESH_MS = 5000;
+    // Largest x-axis gap (in ms) the SoC and total-solar lines will bridge.
+    // Beyond this the line breaks — the orchestrator polls every 30 s, so
+    // ~3× that catches genuine offline windows without flickering on a
+    // single skipped sample.
+    const MAX_LINE_GAP_MS = 90 * 1000;
 
     let chart = null;
+    // Local-midnight Date for the day currently shown on the chart. Mutated
+    // by the prev/today/next nav buttons; also used to derive the URL params
+    // sent to /api/{prices,history,solar} and the x-axis bounds in
+    // renderCombined / updateChart.
+    let viewedDate = startOfLocalDay(new Date());
+    // Polling timer handle so the nav code can pause refreshes when looking
+    // at a non-today day (the data is frozen there).
+    let pollTimer = null;
+
+    function startOfLocalDay(d) {
+        const out = new Date(d);
+        out.setHours(0, 0, 0, 0);
+        return out;
+    }
+
+    function fmtDateYMD(d) {
+        return d.getFullYear() + "-" +
+               pad2(d.getMonth() + 1) + "-" +
+               pad2(d.getDate());
+    }
+
+    function isViewingToday() {
+        return viewedDate.getTime() === startOfLocalDay(new Date()).getTime();
+    }
+
+    function dateQuery() {
+        // No date param when viewing today — falls through to the cache-backed
+        // endpoints, which stay fresh between tick refreshes.
+        return isViewingToday() ? "" : "&date=" + encodeURIComponent(fmtDateYMD(viewedDate));
+    }
 
     function currentHourMatches(iso, now) {
         const d = new Date(iso);
@@ -131,6 +166,9 @@
 
     function buildChartData(prices, readings, solarPoints) {
         const now = new Date();
+        // Only highlight the "current hour" bar when the chart is showing
+        // today — on a historic or future day there's no live current hour.
+        const showCurrentHour = isViewingToday();
 
         const priceBars = prices.map(p => ({
             x: new Date(p.timestamp).valueOf(),
@@ -138,19 +176,22 @@
         }));
         const priceColors = prices.map(p => {
             if (p.injection_eur_per_kwh < 0) return COLOR_NEG;
-            if (currentHourMatches(p.timestamp, now)) return COLOR_CURRENT;
+            if (showCurrentHour && currentHourMatches(p.timestamp, now)) return COLOR_CURRENT;
             return COLOR_MUTED;
         });
         const priceBorders = prices.map(p =>
-            currentHourMatches(p.timestamp, now) ? COLOR_ACCENT : "transparent"
+            (showCurrentHour && currentHourMatches(p.timestamp, now))
+                ? COLOR_ACCENT
+                : "transparent"
         );
 
-        const socLine = readings
-            .filter(r => r.battery_soc_pct !== null && r.battery_soc_pct !== undefined)
-            .map(r => ({
-                x: new Date(r.timestamp).valueOf(),
-                y: r.battery_soc_pct,
-            }));
+        // Keep readings without a SoC sample but emit a null y so the line
+        // breaks at the gap (spanGaps with MAX_LINE_GAP_MS additionally
+        // breaks across time gaps where no reading exists at all).
+        const socLine = readings.map(r => ({
+            x: new Date(r.timestamp).valueOf(),
+            y: r.battery_soc_pct == null ? null : r.battery_soc_pct,
+        }));
 
         const solarLine = (solarPoints || []).map(p => ({
             x: new Date(p.timestamp).valueOf(),
@@ -158,36 +199,31 @@
         }));
 
         // Measured total solar = small + large (with the same sign flip used
-        // by the tile so positive = generating). Drop points where neither
-        // meter reported anything; spanGaps reconnects the line.
-        const totalSolarLine = readings
-            .map(r => {
-                const s = r.small_solar_w == null ? null : -r.small_solar_w;
-                const l = r.large_solar_w == null ? null : -r.large_solar_w;
-                let total;
-                if (s != null && l != null) total = s + l;
-                else if (s != null) total = s;
-                else if (l != null) total = l;
-                else return null;
-                return { x: new Date(r.timestamp).valueOf(), y: total / 1000.0 };
-            })
-            .filter(p => p !== null);
+        // by the tile so positive = generating). Emit null y when neither
+        // meter reported, so the line breaks at the missing sample instead
+        // of bridging across it.
+        const totalSolarLine = readings.map(r => {
+            const s = r.small_solar_w == null ? null : -r.small_solar_w;
+            const l = r.large_solar_w == null ? null : -r.large_solar_w;
+            let total = null;
+            if (s != null && l != null) total = s + l;
+            else if (s != null) total = s;
+            else if (l != null) total = l;
+            return {
+                x: new Date(r.timestamp).valueOf(),
+                y: total == null ? null : total / 1000.0,
+            };
+        });
 
         return { priceBars, priceColors, priceBorders, socLine, solarLine, totalSolarLine };
     }
 
     function renderCombined(canvas, prices, readings, solarPoints) {
-        const now = new Date();
-
-        // Lock the x-axis to today's local 00:00 -> 24:00 window.
-        const startOfToday = new Date(now);
-        startOfToday.setHours(0, 0, 0, 0);
-        const endOfToday = new Date(startOfToday);
-        endOfToday.setDate(endOfToday.getDate() + 1);
-        const todayLabel =
-            startOfToday.getFullYear() + "-" +
-            String(startOfToday.getMonth() + 1).padStart(2, "0") + "-" +
-            String(startOfToday.getDate()).padStart(2, "0");
+        // Lock the x-axis to the viewed local-day's 00:00 -> 24:00 window.
+        const startOfDay = new Date(viewedDate);
+        const endOfDay = new Date(startOfDay);
+        endOfDay.setDate(endOfDay.getDate() + 1);
+        const dayLabel = fmtDateYMD(startOfDay);
 
         const { priceBars, priceColors, priceBorders, socLine, solarLine, totalSolarLine } =
             buildChartData(prices, readings, solarPoints);
@@ -230,7 +266,7 @@
                         borderWidth: 6,
                         pointRadius: 0,
                         tension: 0.2,
-                        spanGaps: true,
+                        spanGaps: MAX_LINE_GAP_MS,
                         yAxisID: "ySolar",
                         order: 3,
                     },
@@ -243,7 +279,7 @@
                         borderWidth: 3,
                         pointRadius: 0,
                         tension: 0.2,
-                        spanGaps: true,
+                        spanGaps: MAX_LINE_GAP_MS,
                         yAxisID: "ySolar",
                         order: 2,
                     },
@@ -256,7 +292,7 @@
                         borderWidth: 6,
                         pointRadius: 0,
                         tension: 0.2,
-                        spanGaps: true,
+                        spanGaps: MAX_LINE_GAP_MS,
                         yAxisID: "ySoc",
                         order: 1,
                     },
@@ -269,7 +305,7 @@
                         borderWidth: 3,
                         pointRadius: 0,
                         tension: 0.2,
-                        spanGaps: true,
+                        spanGaps: MAX_LINE_GAP_MS,
                         yAxisID: "ySoc",
                         order: 0,
                     },
@@ -316,11 +352,11 @@
                     x: {
                         type: "time",
                         time: { unit: "hour", tooltipFormat: "HH:mm" },
-                        min: startOfToday.valueOf(),
-                        max: endOfToday.valueOf(),
+                        min: startOfDay.valueOf(),
+                        max: endOfDay.valueOf(),
                         title: {
                             display: true,
-                            text: todayLabel,
+                            text: dayLabel,
                             color: TEXT_MUTED,
                             padding: { top: 6 },
                         },
@@ -344,6 +380,7 @@
                     ySolar: {
                         position: "right",
                         min: 0,
+                        max: 10,
                         title: { display: true, text: "Solar kW", color: TEXT_MUTED },
                         ticks: { color: TEXT_MUTED },
                         grid: { display: false },
@@ -372,6 +409,14 @@
         chart.data.datasets[3].data = totalSolarLine;
         chart.data.datasets[4].data = socLine;
         chart.data.datasets[5].data = socLine;
+        // Re-bind the x-axis window to the viewed day so prev/next nav
+        // actually pans the chart instead of stretching today's bars.
+        const startOfDay = new Date(viewedDate);
+        const endOfDay = new Date(startOfDay);
+        endOfDay.setDate(endOfDay.getDate() + 1);
+        chart.options.scales.x.min = startOfDay.valueOf();
+        chart.options.scales.x.max = endOfDay.valueOf();
+        chart.options.scales.x.title.text = fmtDateYMD(startOfDay);
         chart.update("none");
     }
 
@@ -479,13 +524,33 @@
             wh != null ? (wh / 1000.0).toFixed(1) + " kWh" : "—");
     }
 
+    function buildChartUrls() {
+        // /api/state always reflects the live device snapshot — independent
+        // of the chart's date selector, since the tiles + state card show
+        // current readings even while the user is browsing history.
+        if (isViewingToday()) {
+            return {
+                history: "/api/history?h=24",
+                prices: "/api/prices",
+                solar: "/api/solar",
+            };
+        }
+        const d = encodeURIComponent(fmtDateYMD(viewedDate));
+        return {
+            history: `/api/history?h=24&date=${d}`,
+            prices: `/api/prices?date=${d}`,
+            solar: `/api/solar?date=${d}`,
+        };
+    }
+
     async function refreshAll() {
+        const urls = buildChartUrls();
         try {
             const [state, history, priceJson, solarJson] = await Promise.all([
                 fetchJson("/api/state"),
-                fetchJson("/api/history?h=24"),
-                fetchJson("/api/prices"),
-                fetchJson("/api/solar"),
+                fetchJson(urls.history),
+                fetchJson(urls.prices),
+                fetchJson(urls.solar),
             ]);
             applyState(state);
             applyHistory(history);
@@ -494,7 +559,11 @@
                         (solarJson && solarJson.points) || []);
             const status = document.getElementById("dashboard-refresh-status");
             if (status) {
-                status.textContent = `Live — last refresh ${fmtTimeShort(new Date().toISOString())}.`;
+                if (isViewingToday()) {
+                    status.textContent = `Live — last refresh ${fmtTimeShort(new Date().toISOString())}.`;
+                } else {
+                    status.textContent = `Showing ${fmtDateYMD(viewedDate)} — live polling paused.`;
+                }
             }
         } catch (e) {
             console.warn("Dashboard refresh failed", e);
@@ -572,19 +641,80 @@
         });
     }
 
+    function startPolling() {
+        if (pollTimer == null) pollTimer = setInterval(refreshAll, REFRESH_MS);
+    }
+    function stopPolling() {
+        if (pollTimer != null) { clearInterval(pollTimer); pollTimer = null; }
+    }
+
+    function applyNavUi() {
+        const dateEl = document.getElementById("chart-date");
+        if (dateEl) dateEl.textContent = fmtDateYMD(viewedDate);
+        const nextBtn = document.getElementById("chart-next");
+        if (nextBtn) {
+            // Past today there's no recorded data — disable the Next button
+            // so users don't navigate into an empty future. They can still
+            // jump back via Today / Prev.
+            nextBtn.disabled = isViewingToday();
+        }
+        const todayBtn = document.getElementById("chart-today");
+        if (todayBtn) todayBtn.disabled = isViewingToday();
+    }
+
+    async function navigateTo(newDate) {
+        viewedDate = startOfLocalDay(newDate);
+        applyNavUi();
+        // Polling only makes sense while looking at today — past days are
+        // immutable. Stop it explicitly before fetching, then restart only
+        // if the new date is today.
+        stopPolling();
+        await refreshAll();
+        if (isViewingToday() && !document.hidden) {
+            startPolling();
+        }
+    }
+
+    function wireChartNav() {
+        const prev = document.getElementById("chart-prev");
+        const today = document.getElementById("chart-today");
+        const next = document.getElementById("chart-next");
+        if (prev) prev.addEventListener("click", () => {
+            const d = new Date(viewedDate);
+            d.setDate(d.getDate() - 1);
+            navigateTo(d);
+        });
+        if (today) today.addEventListener("click", () => {
+            navigateTo(new Date());
+        });
+        if (next) next.addEventListener("click", () => {
+            const d = new Date(viewedDate);
+            d.setDate(d.getDate() + 1);
+            // Cap at today — the disabled-when-today check on the button is
+            // belt-and-braces; this is the actual guard.
+            const startOfToday = startOfLocalDay(new Date());
+            if (d.getTime() > startOfToday.getTime()) return;
+            navigateTo(d);
+        });
+        applyNavUi();
+    }
+
     async function init() {
         installDateAdapter();
         const canvas = document.getElementById("mainChart");
         if (!canvas) return;
 
+        wireChartNav();
+
+        const urls = buildChartUrls();
         let prices = [];
         let history = { readings: [] };
         let solarPoints = [];
         try {
             const [priceJson, historyJson, solarJson] = await Promise.all([
-                fetchJson("/api/prices"),
-                fetchJson("/api/history?h=24"),
-                fetchJson("/api/solar"),
+                fetchJson(urls.prices),
+                fetchJson(urls.history),
+                fetchJson(urls.solar),
             ]);
             prices = priceJson.prices || [];
             history = historyJson;
@@ -603,22 +733,15 @@
         // Pause polling while the tab is hidden — the user already gets
         // a fresh render on their next focus via the manual `refreshAll`
         // we trigger on visibilitychange.
-        let timer = null;
-        function start() {
-            if (timer == null) timer = setInterval(refreshAll, REFRESH_MS);
-        }
-        function stop() {
-            if (timer != null) { clearInterval(timer); timer = null; }
-        }
         document.addEventListener("visibilitychange", () => {
             if (document.hidden) {
-                stop();
+                stopPolling();
             } else {
                 refreshAll();
-                start();
+                if (isViewingToday()) startPolling();
             }
         });
-        start();
+        if (isViewingToday()) startPolling();
     }
 
     if (document.readyState === "loading") {

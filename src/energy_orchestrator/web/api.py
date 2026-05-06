@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
@@ -27,7 +27,9 @@ from energy_orchestrator.data import UnitOfWork
 from energy_orchestrator.data.models import (
     Decision,
     OverrideMode,
+    PricePointRow,
     Reading,
+    SolarForecastPointRow,
     SourceName,
     SourceStatus,
 )
@@ -53,6 +55,23 @@ router = APIRouter(prefix="/api")
 # How recently a successful read counts as "OK" before it degrades to STALE.
 _OK_THRESHOLD = timedelta(minutes=5)
 _DEGRADED_THRESHOLD = timedelta(minutes=30)
+
+
+def _local_day_window(date_str: str) -> tuple[datetime, datetime]:
+    """Parse ``YYYY-MM-DD`` as a server-local calendar day and return its
+    UTC ``[start, end)`` instants.
+
+    Browser and server are colocated on the home box, so the server's local
+    TZ matches what the dashboard renders. ``astimezone()`` with no argument
+    attaches the system tz; converting to UTC normalises to storage tz.
+    """
+    try:
+        local_midnight = datetime.fromisoformat(f"{date_str}T00:00:00").astimezone()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid date: {date_str}") from exc
+    start = local_midnight.astimezone(UTC)
+    end = (local_midnight + timedelta(days=1)).astimezone(UTC)
+    return start, end
 
 
 # ----- request/response models ------------------------------------------------
@@ -194,12 +213,21 @@ async def get_state(
 async def get_history(
     uow: UowDep,
     h: int = Query(default=24, ge=1, le=24 * 30),
+    date: str | None = Query(default=None, description="YYYY-MM-DD (server-local day)"),
 ) -> dict[str, Any]:
+    """Readings + decisions for either the last ``h`` hours or one specific
+    server-local calendar day. ``date`` wins when both are supplied."""
     async with uow:
-        readings = list(await uow.readings.recent(hours=h))
-        decisions = list(await uow.decisions.recent(hours=h))
+        if date is not None:
+            start, end = _local_day_window(date)
+            readings = list(await uow.readings.between(start, end))
+            decisions = list(await uow.decisions.between(start, end))
+        else:
+            readings = list(await uow.readings.recent(hours=h))
+            decisions = list(await uow.decisions.recent(hours=h))
     return {
         "hours": h,
+        "date": date,
         "readings": [_reading_to_dict(r) for r in readings],
         "decisions": [_decision_to_dict(d) for d in decisions],
     }
@@ -251,20 +279,44 @@ async def get_health(config: ConfigDep, uow: UowDep) -> dict[str, Any]:
 
 
 @router.get("/prices")
-async def get_prices(price_cache: PriceCacheDep) -> dict[str, Any]:
-    """Return cached day-ahead price points covering yesterday + today +
-    tomorrow (UTC).
+async def get_prices(
+    price_cache: PriceCacheDep,
+    uow: UowDep,
+    date: str | None = Query(default=None, description="YYYY-MM-DD (server-local day)"),
+) -> dict[str, Any]:
+    """Return day-ahead price points.
 
-    The dashboard chart renders bars on a local-time x-axis. East of UTC, the
-    first local-today hours sit in yesterday's UTC date, so we widen the
-    window by a day backwards to keep the chart fully populated. The chart
-    clips bars outside its visible range; consumers that want a tighter
-    window can filter client-side.
+    Without ``date``, returns the in-memory cache's current window
+    (yesterday + today + tomorrow UTC) — fresh, refreshed by the tick loop.
 
-    The cache is populated by the orchestrator tick loop. Until the loop has
-    produced a successful fetch, ``prices`` is an empty list and
-    ``last_refresh`` is ``null``.
+    With ``date=YYYY-MM-DD``, queries the persisted ``price_points`` table
+    for a window that covers the local calendar day plus one day on each
+    side (chart clips client-side; the slop matches the cache window).
     """
+    if date is not None:
+        local_start, local_end = _local_day_window(date)
+        # Widen the persisted-window read to mirror the cache's slop, so a
+        # local-day chart stays fully populated near midnight regardless of
+        # the server's UTC offset.
+        start = local_start - timedelta(days=1)
+        end = local_end + timedelta(days=1)
+        async with uow:
+            rows: Sequence[PricePointRow] = await uow.price_points.between(start, end)
+        return {
+            "last_refresh": None,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "date": date,
+            "prices": [
+                {
+                    "timestamp": _iso_utc(r.timestamp),
+                    "consumption_eur_per_kwh": r.consumption_eur_per_kwh,
+                    "injection_eur_per_kwh": r.injection_eur_per_kwh,
+                }
+                for r in rows
+            ],
+        }
+
     now = datetime.now(UTC)
     today_utc_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
     start = today_utc_midnight - timedelta(days=1)
@@ -276,6 +328,7 @@ async def get_prices(price_cache: PriceCacheDep) -> dict[str, Any]:
         ),
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
+        "date": None,
         "prices": [
             {
                 "timestamp": p.timestamp.isoformat(),
@@ -288,14 +341,49 @@ async def get_prices(price_cache: PriceCacheDep) -> dict[str, Any]:
 
 
 @router.get("/solar")
-async def get_solar(solar_cache: SolarCacheDep) -> dict[str, Any]:
-    """Return cached Forecast.Solar output: hourly summed-watts time series for
-    today + tomorrow plus per-plane breakdown and today's expected total kWh.
+async def get_solar(
+    solar_cache: SolarCacheDep,
+    uow: UowDep,
+    date: str | None = Query(default=None, description="YYYY-MM-DD (server-local day)"),
+) -> dict[str, Any]:
+    """Return Forecast.Solar output.
 
-    The cache is populated by the orchestrator tick loop (every ~30 min).
-    Until the first successful fetch this returns an empty payload with
-    ``last_refresh: null``.
+    Without ``date``, serves the in-memory cache (today + tomorrow plus
+    today/tomorrow kWh totals). With ``date=YYYY-MM-DD`` the persisted
+    ``solar_forecast_points`` table is queried for that local calendar day;
+    aggregate kWh fields are not available for historic days and come back
+    as ``null``.
     """
+    if date is not None:
+        start, end = _local_day_window(date)
+        async with uow:
+            rows: Sequence[SolarForecastPointRow] = await uow.solar_forecast.between(start, end)
+        # Re-derive the summed series and the per-plane breakdown from rows.
+        # ``defaultdict``-style accumulation keeps a single pass.
+        summed: dict[datetime, float] = {}
+        per_plane: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            ts = _utc_aware(r.timestamp)
+            assert ts is not None  # PK column is non-null
+            summed[ts] = summed.get(ts, 0.0) + r.watts
+            per_plane.setdefault(r.plane, []).append(
+                {"timestamp": _iso_utc(r.timestamp), "watts": r.watts}
+            )
+        points = [
+            {"timestamp": _iso_utc(ts), "watts": watts}
+            for ts, watts in sorted(summed.items())
+        ]
+        return {
+            "last_refresh": None,
+            "window_start": start.isoformat(),
+            "window_end": end.isoformat(),
+            "date": date,
+            "watt_hours_today": None,
+            "watt_hours_tomorrow": None,
+            "points": points,
+            "per_plane": per_plane,
+        }
+
     now = datetime.now(UTC)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=2)
@@ -305,6 +393,7 @@ async def get_solar(solar_cache: SolarCacheDep) -> dict[str, Any]:
             "last_refresh": None,
             "window_start": start.isoformat(),
             "window_end": end.isoformat(),
+            "date": None,
             "watt_hours_today": None,
             "watt_hours_tomorrow": None,
             "points": [],
@@ -329,6 +418,7 @@ async def get_solar(solar_cache: SolarCacheDep) -> dict[str, Any]:
         ),
         "window_start": start.isoformat(),
         "window_end": end.isoformat(),
+        "date": None,
         "watt_hours_today": forecast.watt_hours_today,
         "watt_hours_tomorrow": forecast.watt_hours_tomorrow,
         "points": points,

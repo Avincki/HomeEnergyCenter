@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>HomeEnergyCenter — Server Setup Guide</title>
+<style>
+  :root {
+    --bg: #0e1116;
+    --panel: #161b22;
+    --panel-2: #1f2630;
+    --text: #e6edf3;
+    --muted: #9aa6b2;
+    --accent: #58a6ff;
+    --accent-2: #f7c948;
+    --warn: #ffa657;
+    --ok: #56d364;
+    --border: #2a313c;
+    --code-bg: #0b0f14;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.55;
+    font-size: 16px;
+  }
+  .wrap {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 32px 24px 80px;
+  }
+  header {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 18px;
+    margin-bottom: 32px;
+  }
+  header h1 {
+    margin: 0 0 6px;
+    font-size: 28px;
+    letter-spacing: -0.01em;
+  }
+  header .sub {
+    color: var(--muted);
+    font-size: 14px;
+  }
+  nav.toc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 16px 20px;
+    margin-bottom: 32px;
+  }
+  nav.toc h2 {
+    margin: 0 0 8px;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+  }
+  nav.toc ol {
+    margin: 0;
+    padding-left: 22px;
+  }
+  nav.toc a {
+    color: var(--accent);
+    text-decoration: none;
+  }
+  nav.toc a:hover { text-decoration: underline; }
+  h2 {
+    margin-top: 48px;
+    font-size: 22px;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 6px;
+  }
+  h3 {
+    margin-top: 28px;
+    font-size: 17px;
+    color: var(--accent);
+  }
+  h4 {
+    margin-top: 20px;
+    font-size: 15px;
+    color: var(--accent-2);
+  }
+  p, li { color: var(--text); }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, "Cascadia Code", monospace;
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 0.92em;
+  }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 14px 16px;
+    overflow-x: auto;
+    font-size: 0.88em;
+    line-height: 1.5;
+  }
+  pre code {
+    background: transparent;
+    border: 0;
+    padding: 0;
+    font-size: inherit;
+  }
+  .note, .warn, .tip {
+    border-left: 4px solid var(--accent);
+    background: var(--panel);
+    padding: 12px 16px;
+    margin: 16px 0;
+    border-radius: 4px;
+  }
+  .warn { border-left-color: var(--warn); }
+  .tip { border-left-color: var(--ok); }
+  .note strong, .warn strong, .tip strong {
+    display: block;
+    font-size: 12px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+    margin-bottom: 4px;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 16px 0;
+    font-size: 0.92em;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  th {
+    background: var(--panel-2);
+    font-weight: 600;
+  }
+  hr {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 40px 0;
+  }
+  .pill {
+    display: inline-block;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 1px 10px;
+    font-size: 0.78em;
+    color: var(--muted);
+    margin-left: 8px;
+    vertical-align: middle;
+  }
+  a { color: var(--accent); }
+  details {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 12px 0;
+  }
+  details > summary {
+    cursor: pointer;
+    font-weight: 600;
+  }
+  footer {
+    margin-top: 56px;
+    color: var(--muted);
+    font-size: 12px;
+    border-top: 1px solid var(--border);
+    padding-top: 14px;
+  }
+  kbd {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-bottom-width: 2px;
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: inherit;
+    font-size: 0.85em;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>HomeEnergyCenter — Server Setup Guide</h1>
+  <div class="sub">Deploying the energy orchestrator on a Raspberry Pi or NVIDIA DGX Spark, running it as a service, and accessing it from your phone over Tailscale.</div>
+</header>
+
+<nav class="toc">
+  <h2>Contents</h2>
+  <ol>
+    <li><a href="#overview">Overview &amp; prerequisites</a></li>
+    <li><a href="#pi">Option A — Raspberry Pi</a></li>
+    <li><a href="#dgx">Option B — NVIDIA DGX Spark</a></li>
+    <li><a href="#install">Install the application</a></li>
+    <li><a href="#config">Configure</a></li>
+    <li><a href="#firstrun">First run &amp; smoke test</a></li>
+    <li><a href="#service">Run as a service (systemd)</a></li>
+    <li><a href="#tailscale-host">Tailscale on the host</a></li>
+    <li><a href="#tailscale-mobile">Tailscale on your phone</a></li>
+    <li><a href="#troubleshooting">Troubleshooting</a></li>
+  </ol>
+</nav>
+
+<!-- ============================================================ -->
+<h2 id="overview">1. Overview &amp; prerequisites</h2>
+
+<p>
+HomeEnergyCenter is a self-hosted Python service (FastAPI + uvicorn) that minimises electricity cost on a Belgian dynamic-tariff contract by orchestrating SolarEdge, sonnenBatterie, and HomeWizard devices. It runs as a long-lived web service that:
+</p>
+<ul>
+  <li>Polls local network devices (inverter, battery, P1 meter, EV charger) over HTTP and Modbus-TCP.</li>
+  <li>Stores time series in SQLite and exposes a dashboard / API on port <code>8000</code> by default.</li>
+  <li>Pulls day-ahead prices from ENTSO-E and a solar forecast from Forecast.Solar.</li>
+</ul>
+
+<div class="warn">
+  <strong>Network requirement</strong>
+  The host must be on the same LAN as the energy hardware (default subnet in this project: <code>192.168.129.0/24</code>). A cloud or off-site host will not work — Modbus and the local-API endpoints are only reachable inside the home network.
+</div>
+
+<h3>Hardware comparison</h3>
+<table>
+  <thead>
+    <tr><th>Box</th><th>Suitability</th><th>Notes</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td>Raspberry Pi 5 (8 GB)</td>
+      <td>Excellent</td>
+      <td>Cheap, silent, 5 W idle. The recommended target — orchestration is light I/O, no GPU needed.</td>
+    </tr>
+    <tr>
+      <td>Raspberry Pi 4 (4 GB+)</td>
+      <td>Fine</td>
+      <td>Slower install (slow wheel builds), but runtime load is trivial.</td>
+    </tr>
+    <tr>
+      <td>NVIDIA DGX Spark</td>
+      <td>Overkill but works</td>
+      <td>Only worth it if you also plan to run local LLMs / forecasting models on the same box. Same setup as any Ubuntu ARM64 host.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Common prerequisites</h3>
+<ul>
+  <li>Python <strong>3.11 or newer</strong>.</li>
+  <li>An always-on wired Ethernet connection to your home LAN.</li>
+  <li>A Tailscale account (free) — sign up at <code>https://tailscale.com</code>.</li>
+  <li>Your existing <code>config.yaml</code> (or <code>config.example.yaml</code> as a starting point), with device IPs, ENTSO-E API key, and tariff settings.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="pi">2. Option A — Raspberry Pi <span class="pill">recommended</span></h2>
+
+<h3>2.1 Flash the OS</h3>
+<ol>
+  <li>Download <strong>Raspberry Pi Imager</strong> from <code>https://www.raspberrypi.com/software/</code>.</li>
+  <li>Insert a 32 GB+ A2-class microSD card (or use an SSD over USB-3 for better longevity).</li>
+  <li>Choose <strong>Raspberry Pi OS Lite (64-bit, Bookworm)</strong>. The desktop edition is unnecessary — this runs headless.</li>
+  <li>Click the gear icon to pre-configure:
+    <ul>
+      <li>Hostname: <code>energycenter</code></li>
+      <li>Username/password (don't use <code>pi/raspberry</code>).</li>
+      <li>Enable SSH (key-based recommended).</li>
+      <li>Set Wi-Fi if you can't use Ethernet (Ethernet is preferred for stability).</li>
+      <li>Locale: Europe/Brussels.</li>
+    </ul>
+  </li>
+  <li>Write, eject, boot the Pi.</li>
+</ol>
+
+<h3>2.2 First boot — update &amp; install dependencies</h3>
+<p>SSH in from your laptop:</p>
+<pre><code>ssh youruser@energycenter.local</code></pre>
+
+<p>Bring the system up to date and install build prerequisites:</p>
+<pre><code>sudo apt update &amp;&amp; sudo apt upgrade -y
+sudo apt install -y \
+    python3 python3-venv python3-pip python3-dev \
+    git build-essential libssl-dev libffi-dev \
+    sqlite3 curl ca-certificates</code></pre>
+
+<p>Verify Python:</p>
+<pre><code>python3 --version
+# expect: Python 3.11.x or newer</code></pre>
+
+<div class="tip">
+  <strong>Pi tip</strong>
+  Bookworm ships with Python 3.11. If you're on an older Bullseye image, upgrade — building Python 3.11 from source on a Pi takes ~40 minutes and is unnecessary.
+</div>
+
+<p>Now jump to <a href="#install">section 4 (Install the application)</a>.</p>
+
+<!-- ============================================================ -->
+<h2 id="dgx">3. Option B — NVIDIA DGX Spark</h2>
+
+<p>
+The DGX Spark ships with <strong>DGX OS</strong> (Ubuntu-based, ARM64, GB10 Grace Blackwell). For a non-GPU service like HomeEnergyCenter, you treat it as a regular Ubuntu host — no CUDA wrangling required.
+</p>
+
+<h3>3.1 Initial setup</h3>
+<ol>
+  <li>Complete NVIDIA's first-boot wizard (account, network, DGX Cloud login if you use it).</li>
+  <li>Plug into wired Ethernet on the same LAN as your inverter/battery/meter.</li>
+  <li>Open a terminal (or SSH in from your laptop).</li>
+</ol>
+
+<h3>3.2 Install OS dependencies</h3>
+<pre><code>sudo apt update &amp;&amp; sudo apt upgrade -y
+sudo apt install -y \
+    python3 python3-venv python3-pip python3-dev \
+    git build-essential libssl-dev libffi-dev \
+    sqlite3 curl ca-certificates</code></pre>
+
+<p>Confirm Python ≥ 3.11:</p>
+<pre><code>python3 --version</code></pre>
+
+<div class="note">
+  <strong>If you also plan to run local models</strong>
+  Keep HomeEnergyCenter in its own venv and its own systemd unit, separate from any CUDA / PyTorch environments. There's no reason for the orchestrator to share a Python environment with model code — segregating them makes upgrades safer.
+</div>
+
+<p>Continue with section 4.</p>
+
+<!-- ============================================================ -->
+<h2 id="install">4. Install the application</h2>
+
+<p>The steps below are identical on Pi and DGX Spark.</p>
+
+<h3>4.1 Create a service user (recommended)</h3>
+<pre><code>sudo useradd --system --create-home --home-dir /opt/energycenter --shell /bin/bash energycenter
+sudo -u energycenter -i</code></pre>
+
+<p>You're now in <code>/opt/energycenter</code> as the <code>energycenter</code> user.</p>
+
+<h3>4.2 Get the code</h3>
+<p>Either clone from your git host:</p>
+<pre><code>git clone &lt;your-repo-url&gt; HomeEnergyCenter
+cd HomeEnergyCenter</code></pre>
+
+<p>Or, if you're moving from the Windows machine, copy the working tree over <code>scp</code> / <code>rsync</code>. Exclude <code>.venv/</code>, <code>__pycache__/</code>, <code>*.db</code>, and any local secrets you don't want shipped.</p>
+
+<pre><code># From the Windows source machine, e.g. (run in WSL or Git Bash):
+rsync -av --exclude='.venv' --exclude='__pycache__' --exclude='*.db' \
+  ./HomeEnergyCenter/ energycenter@energycenter.local:/opt/energycenter/HomeEnergyCenter/</code></pre>
+
+<h3>4.3 Create a virtualenv and install</h3>
+<pre><code>cd /opt/energycenter/HomeEnergyCenter
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip wheel
+pip install -e .</code></pre>
+
+<div class="warn">
+  <strong>Pi build time</strong>
+  On a Pi 4, <code>pymodbus</code> and <code>aiohttp</code> wheels usually exist for ARM64; if pip falls back to source, expect 10–15 minutes. Be patient — it's a one-off.
+</div>
+
+<!-- ============================================================ -->
+<h2 id="config">5. Configure</h2>
+
+<h3>5.1 Create <code>config.yaml</code></h3>
+<pre><code>cp config.example.yaml config.yaml
+nano config.yaml</code></pre>
+
+<p>At minimum, set:</p>
+<ul>
+  <li><strong>Device IPs</strong> — your sonnenBatterie, P1 meter, car charger, small/large solar, SolarEdge inverter. Use the static LAN IPs reserved on your router.</li>
+  <li><strong>ENTSO-E API token</strong> — the day-ahead pricing key (was migrated to <code>web-api.tp.entsoe.eu</code> in the recent refactor).</li>
+  <li><strong>Web bind</strong> — leave as:
+    <pre><code>web:
+  host: 0.0.0.0
+  port: 8000</code></pre>
+    so the dashboard listens on every interface (LAN <em>and</em> the Tailscale virtual interface).
+  </li>
+  <li><strong>Timezone</strong> — <code>Europe/Brussels</code> for tariff alignment.</li>
+</ul>
+
+<h3>5.2 Initialise the database</h3>
+<p>The project uses Alembic migrations:</p>
+<pre><code>cd /opt/energycenter/HomeEnergyCenter
+source .venv/bin/activate
+alembic upgrade head</code></pre>
+
+<p>This creates the SQLite DB and applies all migrations. The next launch will reuse it.</p>
+
+<!-- ============================================================ -->
+<h2 id="firstrun">6. First run &amp; smoke test</h2>
+
+<p>Still in the venv:</p>
+<pre><code>python main.py</code></pre>
+
+<p>Expected output: structured logs from device pollers, the price provider, and uvicorn announcing it's listening on <code>0.0.0.0:8000</code>.</p>
+
+<p>From any device on the same LAN, open:</p>
+<pre><code>http://&lt;host-lan-ip&gt;:8000/</code></pre>
+
+<p>You should see the dashboard. Once verified, hit <kbd>Ctrl</kbd>+<kbd>C</kbd> and proceed to make it a service.</p>
+
+<details>
+<summary>How to find the host's LAN IP</summary>
+<pre><code>ip -4 addr show | grep inet</code></pre>
+<p>Look for the <code>192.168.129.x</code> address on <code>eth0</code> (or <code>end0</code> on newer kernels).</p>
+</details>
+
+<!-- ============================================================ -->
+<h2 id="service">7. Run as a service (systemd)</h2>
+
+<p>A systemd unit gives you auto-start at boot, auto-restart on crash, and structured logs in <code>journalctl</code>.</p>
+
+<h3>7.1 Create the unit file</h3>
+<pre><code>sudo nano /etc/systemd/system/energycenter.service</code></pre>
+
+<p>Paste:</p>
+<pre><code>[Unit]
+Description=HomeEnergyCenter (energy orchestrator)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=energycenter
+Group=energycenter
+WorkingDirectory=/opt/energycenter/HomeEnergyCenter
+Environment=EO_CONFIG=/opt/energycenter/HomeEnergyCenter/config.yaml
+ExecStart=/opt/energycenter/HomeEnergyCenter/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=5
+# Light hardening — orchestrator only needs LAN access and its own data dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/energycenter/HomeEnergyCenter
+
+[Install]
+WantedBy=multi-user.target</code></pre>
+
+<h3>7.2 Enable and start it</h3>
+<pre><code>sudo systemctl daemon-reload
+sudo systemctl enable --now energycenter.service
+sudo systemctl status energycenter.service</code></pre>
+
+<p>Tail logs:</p>
+<pre><code>journalctl -u energycenter.service -f</code></pre>
+
+<h3>7.3 Useful management commands</h3>
+<table>
+  <thead><tr><th>Action</th><th>Command</th></tr></thead>
+  <tbody>
+    <tr><td>Stop</td><td><code>sudo systemctl stop energycenter</code></td></tr>
+    <tr><td>Restart (after config change)</td><td><code>sudo systemctl restart energycenter</code></td></tr>
+    <tr><td>Disable autostart</td><td><code>sudo systemctl disable energycenter</code></td></tr>
+    <tr><td>Last 200 log lines</td><td><code>journalctl -u energycenter -n 200 --no-pager</code></td></tr>
+  </tbody>
+</table>
+
+<h3>7.4 Open the firewall (if active)</h3>
+<p>Pi OS Lite has no firewall by default. If you've enabled <code>ufw</code> or are on DGX OS with one running, allow port 8000 on the LAN and Tailscale interfaces:</p>
+<pre><code># Allow from LAN
+sudo ufw allow from 192.168.129.0/24 to any port 8000 proto tcp
+# Allow from Tailscale (CGNAT range)
+sudo ufw allow from 100.64.0.0/10 to any port 8000 proto tcp</code></pre>
+
+<!-- ============================================================ -->
+<h2 id="tailscale-host">8. Tailscale on the host</h2>
+
+<h3>8.1 Install</h3>
+<p>On both Pi OS and DGX OS (Ubuntu-based), the official one-liner works:</p>
+<pre><code>curl -fsSL https://tailscale.com/install.sh | sh</code></pre>
+
+<h3>8.2 Authenticate</h3>
+<pre><code>sudo tailscale up</code></pre>
+
+<p>The command prints a URL — open it in any browser, log into your Tailscale account, and approve the device. The host now has a stable <code>100.x.y.z</code> address inside your tailnet.</p>
+
+<h3>8.3 Make sure it's discoverable</h3>
+<pre><code>tailscale status
+tailscale ip -4</code></pre>
+
+<p>Note the <code>100.x.y.z</code> address — that's the only address you need to remember.</p>
+
+<h3>8.4 MagicDNS <span class="pill">already enabled — tailnet: tail7b791a.ts.net</span></h3>
+<p>MagicDNS is on for this tailnet, so every device joined to it can reach the host by name instead of by <code>100.x.y.z</code> address. Two equivalent forms work:</p>
+<ul>
+  <li>Short name (works from inside the tailnet): <code>http://energycenter:8000</code></li>
+  <li>Fully qualified: <code>http://energycenter.tail7b791a.ts.net:8000</code></li>
+</ul>
+<p>The fully qualified form is the safer one to bookmark — it never collides with mDNS / local DNS suffixes on phones or laptops that join other networks.</p>
+
+<h3>8.5 Optional: enable HTTPS</h3>
+<p>If your phone browser nags about HTTP, Tailscale offers free certs. With HTTPS turned on for the tailnet, run on the host:</p>
+<pre><code>sudo tailscale cert energycenter.tail7b791a.ts.net</code></pre>
+<p>Then either front uvicorn with a tiny Caddy/nginx terminator, or pass the cert paths into uvicorn via the FastAPI app config. (Skip this until you actually feel the friction — HTTP-only inside Tailscale is end-to-end encrypted by the WireGuard tunnel anyway.)</p>
+
+<!-- ============================================================ -->
+<h2 id="tailscale-mobile">9. Tailscale on your phone</h2>
+
+<ol>
+  <li>Install <strong>Tailscale</strong> from the App Store (iOS) or Play Store (Android).</li>
+  <li>Open it, log in with the <em>same</em> account you used on the host.</li>
+  <li>Toggle the VPN switch on. iOS will ask for VPN permission — approve it.</li>
+  <li>In the app's device list, you should see <code>energycenter</code> with status <em>connected</em>.</li>
+</ol>
+
+<h3>9.1 Open the dashboard</h3>
+<p>From any browser on the phone (cellular, public Wi-Fi, anywhere — the tunnel doesn't care):</p>
+<pre><code># Recommended — fully qualified MagicDNS name on tailnet tail7b791a.ts.net:
+http://energycenter.tail7b791a.ts.net:8000
+
+# Short MagicDNS form (also works inside the tailnet):
+http://energycenter:8000
+
+# Or by raw Tailscale IP if DNS is misbehaving:
+http://&lt;100.x.y.z&gt;:8000</code></pre>
+
+<h3>9.2 Add to home screen</h3>
+<ul>
+  <li><strong>iOS Safari</strong>: tap the share icon → <em>Add to Home Screen</em>. The dashboard now opens like an app.</li>
+  <li><strong>Android Chrome</strong>: menu → <em>Install app</em> / <em>Add to Home screen</em>.</li>
+</ul>
+
+<h3>9.3 Performance and battery</h3>
+<p>Tailscale on idle is essentially free — the WireGuard tunnel only uses bandwidth/CPU when traffic flows. Leave it on.</p>
+
+<!-- ============================================================ -->
+<h2 id="troubleshooting">10. Troubleshooting</h2>
+
+<h3>The service won't start</h3>
+<pre><code>sudo systemctl status energycenter
+journalctl -u energycenter -n 100 --no-pager</code></pre>
+<ul>
+  <li><code>config error</code> — re-check <code>config.yaml</code> against <code>config.example.yaml</code>.</li>
+  <li><code>ModuleNotFoundError</code> — venv not used; check <code>ExecStart</code> path in the unit file.</li>
+  <li><code>Address already in use</code> — another process owns port 8000. Find it with <code>sudo ss -ltnp | grep 8000</code>.</li>
+</ul>
+
+<h3>Dashboard works on LAN but not over Tailscale</h3>
+<ul>
+  <li>Confirm <code>web.host: 0.0.0.0</code> in <code>config.yaml</code> (binding only to <code>127.0.0.1</code> excludes the Tailscale interface).</li>
+  <li>Check the host shows up in <code>tailscale status</code> on your phone.</li>
+  <li>If you have <code>ufw</code> active, see section 7.4.</li>
+</ul>
+
+<h3>Database errors after a code update</h3>
+<pre><code>cd /opt/energycenter/HomeEnergyCenter
+source .venv/bin/activate
+alembic upgrade head
+sudo systemctl restart energycenter</code></pre>
+
+<h3>Modbus / device polling fails</h3>
+<ul>
+  <li>The host is not on the same VLAN/subnet as the inverter. Move it, or set up a route.</li>
+  <li>The device IP changed (DHCP). Reserve a static lease on your router for each energy device.</li>
+</ul>
+
+<h3>Pi runs hot or throttles</h3>
+<p>HomeEnergyCenter alone won't tax a Pi 5, but a hot enclosure will. Check:</p>
+<pre><code>vcgencmd measure_temp
+vcgencmd get_throttled
+# 0x0 = healthy</code></pre>
+
+<hr>
+
+<footer>
+  HomeEnergyCenter setup guide — last updated 2026-05-05.
+  See <code>CLAUDE.alex-vinckier.history.md</code> for the project change log.
+</footer>
+
+</div>
+</body>
+</html>

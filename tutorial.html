@@ -1,0 +1,925 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Energy Orchestrator — Application Description &amp; Tutorial</title>
+<style>
+:root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --panel-2: #111827;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --green: #4ade80;
+    --yellow: #fde047;
+    --orange: #fb923c;
+    --red: #ef4444;
+    --border: rgba(148, 163, 184, 0.18);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    line-height: 1.55;
+    font-size: 16px;
+}
+.container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 2rem 1.5rem 4rem;
+}
+header.hero {
+    border-bottom: 1px solid var(--border);
+    padding: 2.5rem 0 2rem;
+    margin-bottom: 2rem;
+}
+header.hero h1 {
+    margin: 0 0 0.4rem;
+    font-size: 2.2rem;
+    letter-spacing: -0.02em;
+}
+header.hero .subtitle {
+    color: var(--muted);
+    font-size: 1.05rem;
+    max-width: 70ch;
+}
+header.hero .badges {
+    margin-top: 1.2rem;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+}
+.badge {
+    display: inline-block;
+    padding: 0.15rem 0.6rem;
+    border-radius: 999px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    background: rgba(56, 189, 248, 0.15);
+    color: var(--accent);
+    border: 1px solid rgba(56, 189, 248, 0.4);
+}
+.badge.green { background: rgba(74, 222, 128, 0.15); color: var(--green); border-color: rgba(74, 222, 128, 0.4); }
+.badge.yellow { background: rgba(253, 224, 71, 0.15); color: var(--yellow); border-color: rgba(253, 224, 71, 0.4); }
+.badge.muted { background: rgba(148, 163, 184, 0.15); color: var(--muted); border-color: var(--border); }
+
+nav.toc {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem 1.4rem;
+    margin-bottom: 2.5rem;
+}
+nav.toc h2 {
+    margin: 0 0 0.6rem;
+    font-size: 0.85rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    color: var(--muted);
+}
+nav.toc ol {
+    margin: 0;
+    padding-left: 1.5rem;
+    columns: 2;
+    column-gap: 2rem;
+}
+nav.toc li { margin: 0.15rem 0; }
+nav.toc a { color: var(--text); text-decoration: none; }
+nav.toc a:hover { color: var(--accent); }
+
+section {
+    margin: 2.8rem 0;
+}
+section h2 {
+    margin: 0 0 0.4rem;
+    font-size: 1.5rem;
+    letter-spacing: -0.01em;
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 0.4rem;
+}
+section h3 {
+    margin: 1.6rem 0 0.4rem;
+    font-size: 1.1rem;
+    color: var(--text);
+}
+section h3 .small { font-weight: 400; color: var(--muted); font-size: 0.85em; margin-left: 0.4rem; }
+p { margin: 0.6rem 0; }
+ul, ol { margin: 0.4rem 0 0.8rem; padding-left: 1.4rem; }
+li { margin: 0.2rem 0; }
+code, pre, kbd {
+    font-family: "Cascadia Mono", Menlo, Consolas, monospace;
+}
+code {
+    background: rgba(148, 163, 184, 0.12);
+    padding: 0.05rem 0.4rem;
+    border-radius: 4px;
+    font-size: 0.92em;
+    color: var(--accent);
+}
+pre {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.1rem;
+    overflow-x: auto;
+    font-size: 0.88rem;
+    line-height: 1.5;
+    color: #cbd5e1;
+}
+pre code {
+    background: transparent;
+    padding: 0;
+    color: inherit;
+    font-size: inherit;
+}
+kbd {
+    background: rgba(148, 163, 184, 0.12);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.05rem 0.4rem;
+    font-size: 0.85em;
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 1rem 0;
+    font-size: 0.92rem;
+}
+th, td {
+    text-align: left;
+    padding: 0.55rem 0.75rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+}
+th {
+    color: var(--muted);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    background: rgba(148, 163, 184, 0.05);
+}
+
+figure {
+    margin: 1.2rem 0;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 0.8rem;
+}
+figure img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+}
+figcaption {
+    margin-top: 0.6rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-align: center;
+}
+
+.callout {
+    background: var(--panel);
+    border-left: 3px solid var(--accent);
+    border-radius: 0 6px 6px 0;
+    padding: 0.8rem 1.1rem;
+    margin: 1rem 0;
+    font-size: 0.94rem;
+}
+.callout.warn { border-left-color: var(--orange); }
+.callout.tip { border-left-color: var(--green); }
+.callout strong { color: var(--accent); }
+.callout.warn strong { color: var(--orange); }
+.callout.tip strong { color: var(--green); }
+
+.grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    gap: 0.8rem;
+    margin: 1rem 0;
+}
+.card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 1rem 1.1rem;
+}
+.card h4 {
+    margin: 0 0 0.4rem;
+    font-size: 1rem;
+    color: var(--accent);
+}
+.card .muted { color: var(--muted); font-size: 0.85rem; }
+
+.rules-table td:first-child { font-weight: 600; color: var(--accent); white-space: nowrap; }
+
+.flow {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 1.2rem 1.4rem;
+    margin: 1rem 0;
+    font-family: "Cascadia Mono", Menlo, Consolas, monospace;
+    font-size: 0.85rem;
+    color: var(--text);
+    overflow-x: auto;
+    white-space: pre;
+    line-height: 1.4;
+}
+
+footer {
+    margin-top: 4rem;
+    padding-top: 2rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.85rem;
+    text-align: center;
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+.kw { color: var(--accent); }
+.str { color: var(--green); }
+.com { color: var(--muted); font-style: italic; }
+.num { color: var(--yellow); }
+</style>
+</head>
+<body>
+<div class="container">
+
+<header class="hero">
+    <h1>Energy Orchestrator</h1>
+    <p class="subtitle">
+        A self-hosted Python service that minimizes electricity cost on a Belgian
+        dynamic-tariff contract by reading every relevant home energy asset and
+        deciding minute-by-minute whether the SolarEdge inverter should produce or
+        be curtailed. Runs on a Raspberry Pi or any always-on PC; serves a live
+        dashboard, a debug board, an API, and a built-in config editor.
+    </p>
+    <div class="badges">
+        <span class="badge">Python 3.12</span>
+        <span class="badge">FastAPI + SQLAlchemy 2.0</span>
+        <span class="badge">SQLite + Alembic</span>
+        <span class="badge green">253 tests passing</span>
+        <span class="badge yellow">Home-LAN, no cloud</span>
+        <span class="badge muted">Belgian dynamic tariff</span>
+    </div>
+</header>
+
+<nav class="toc">
+    <h2>Contents</h2>
+    <ol>
+        <li><a href="#overview">What it does</a></li>
+        <li><a href="#architecture">Architecture at a glance</a></li>
+        <li><a href="#data-sources">Data sources</a></li>
+        <li><a href="#decision">Decision logic</a></li>
+        <li><a href="#cadences">Polling &amp; decision cadence</a></li>
+        <li><a href="#dashboard">Dashboard tour</a></li>
+        <li><a href="#debug">Debug tab</a></li>
+        <li><a href="#config-tab">Config &amp; logs</a></li>
+        <li><a href="#api">JSON API</a></li>
+        <li><a href="#install">Install &amp; run</a></li>
+        <li><a href="#config">Configuration reference</a></li>
+        <li><a href="#deploy">Raspberry Pi kiosk deployment</a></li>
+        <li><a href="#troubleshoot">Troubleshooting</a></li>
+        <li><a href="#stack">Tech stack</a></li>
+    </ol>
+</nav>
+
+<section id="overview">
+<h2>1. What it does</h2>
+<p>
+    The orchestrator is the brain of a home-LAN energy setup that combines a
+    sonnenBatterie, a SolarEdge PV inverter, several HomeWizard kWh meters, and a
+    Belgian dynamic-tariff electricity contract. Every few seconds it polls all
+    devices, fetches the day-ahead market price, and once a minute decides whether
+    SolarEdge should keep producing or be curtailed via Modbus.
+</p>
+<p>
+    The economic intuition: when the wholesale injection price is negative, exporting
+    PV power costs the household money. When it&rsquo;s positive (or the battery is
+    low, or the EV is charging), local production is profitable. A four-rule engine
+    captures that trade-off and the inverter is set to <code>0&nbsp;%</code> or
+    <code>100&nbsp;%</code> active-power-limit accordingly. Manual override is one
+    click away on the debug tab.
+</p>
+<div class="callout">
+    <strong>Why self-hosted:</strong> the inverter live on the home LAN, talks
+    Modbus on a non-routable port, and we want it to keep working when the
+    internet drops. All assets, including the JS chart library, are vendored
+    locally. No third-party cloud is in the loop except ENTSO-E for prices
+    and Forecast.Solar for the PV-output forecast, both with graceful fallbacks.
+</div>
+</section>
+
+<section id="architecture">
+<h2>2. Architecture at a glance</h2>
+<div class="flow">
+    +------------------+       +------------------+       +-------------------+
+    |  sonnenBatterie  |       |  HomeWizard x4   |       |  SolarEdge        |
+    |  HTTP /api/v2    |       |  HTTP /api/v1    |       |  Modbus TCP :1502 |
+    +--------+---------+       +--------+---------+       +---------+---------+
+             |                          |                           |
+             v                          v                           v
+    +-----------------------------------------------------------------------+
+    |                       Tick loop  (orchestrator.py)                    |
+    |  every poll_interval_s :  read all devices  ->  write Reading row     |
+    |  every decision_interval_s : run rule engine  ->  write Decision row  |
+    |                                                ->  actuate SolarEdge  |
+    +-----------------+----------------------+-----------------+------------+
+                      |                      |                 |
+              +-------v-------+      +-------v------+   +------v-------+
+              | SQLite (WAL)  |      | PriceCache   |   | SolarCache   |
+              | readings,     |      | ENTSO-E      |   | Forecast.Sol |
+              | decisions,    |      | (today + 2d) |   | (30 min TTL) |
+              | source_status |      +--------------+   +--------------+
+              +---------------+
+                      |
+                      v
+    +-----------------------------------------------------------------------+
+    |  FastAPI app  :  / /debug /config /logs /docs   +   /api/* JSON       |
+    |                live tiles, in-place dashboard refresh every 5 s       |
+    +-----------------------------------------------------------------------+
+</div>
+<p>
+    A single Python process. The tick loop runs as a background <code>asyncio.Task</code>
+    started by FastAPI&rsquo;s <code>lifespan</code>. The web layer reads the same
+    SQLite file and the same in-memory caches that the loop writes to. There is no
+    message bus, no queue, no microservices &mdash; one process, one DB file.
+</p>
+</section>
+
+<section id="data-sources">
+<h2>3. Data sources</h2>
+<table>
+<thead><tr><th>Source</th><th>Protocol</th><th>What we read</th><th>Required?</th></tr></thead>
+<tbody>
+<tr>
+    <td>sonnenBatterie</td>
+    <td>HTTP <code>/api/v2/status</code> (token) or <code>/api/v1/status</code></td>
+    <td>SoC %, battery power, house consumption, production, grid feed-in</td>
+    <td>Yes &mdash; SoC drives Rule&nbsp;1</td>
+</tr>
+<tr>
+    <td>HomeWizard car-charger meter</td>
+    <td>HTTP <code>/api/v1/data</code></td>
+    <td><code>active_power_w</code> &mdash; threshold detects "EV is charging"</td>
+    <td>Yes &mdash; drives Rule&nbsp;2</td>
+</tr>
+<tr>
+    <td>HomeWizard P1 (smart meter)</td>
+    <td>HTTP <code>/api/v1/data</code></td>
+    <td>Grid import/export, informational</td>
+    <td>Yes &mdash; tile + future rules</td>
+</tr>
+<tr>
+    <td>HomeWizard small-solar meter</td>
+    <td>HTTP <code>/api/v1/data</code></td>
+    <td>Small (non-SolarEdge) PV output &mdash; proxy for irradiance, used by Rule&nbsp;4 forecast</td>
+    <td>Yes</td>
+</tr>
+<tr>
+    <td>HomeWizard large-solar meter</td>
+    <td>HTTP <code>/api/v1/data</code></td>
+    <td>Second PV string &mdash; the one SolarEdge controls</td>
+    <td>Optional</td>
+</tr>
+<tr>
+    <td>SolarEdge inverter</td>
+    <td>Modbus TCP :1502, register <code>0xF001</code></td>
+    <td>Active-power-limit (read &amp; write); read-back-verified on every write</td>
+    <td>Yes</td>
+</tr>
+<tr>
+    <td>ENTSO-E</td>
+    <td>HTTPS day-ahead REST</td>
+    <td>Hourly day-ahead injection &amp; consumption prices for BE bidding zone</td>
+    <td>Yes &mdash; drives Rules&nbsp;3 and&nbsp;4</td>
+</tr>
+<tr>
+    <td>Forecast.Solar</td>
+    <td>HTTPS public API</td>
+    <td>Hour-by-hour PV-output forecast for each plane (E/W); summed total kWh today/tomorrow</td>
+    <td>Optional</td>
+</tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+    <strong>HomeWizard local API gotcha:</strong> the local HTTP API is
+    <em>off by default</em> on every HomeWizard device. Open the HomeWizard Energy
+    app &rarr; pick the meter &rarr; <em>Settings</em> &rarr; toggle
+    <em>Local API</em> on. Without that, port 80 will refuse the TCP connection
+    even though the device is reachable on the LAN.
+</div>
+
+<div class="callout warn">
+    <strong>SolarEdge inverter prerequisites</strong> (one-time, in SetApp):
+    <em>Modbus TCP enabled</em>, and <em>Advanced Power Control enabled AND
+    committed</em>. Without "committed", writes to <code>0xF001</code> succeed
+    but the inverter ignores them.
+</div>
+</section>
+
+<section id="decision">
+<h2>4. Decision logic</h2>
+<p>
+    The rule engine evaluates four rules in priority order. The first rule whose
+    condition holds determines the action. Manual override sits on top &mdash; when
+    the user picks <em>Force ON</em> / <em>Force OFF</em> from the debug tab, the
+    auto computation is still recorded for audit, but the override decides what
+    the inverter actually does.
+</p>
+<table class="rules-table">
+<thead><tr><th>Rule</th><th>Condition</th><th>Action</th><th>Why</th></tr></thead>
+<tbody>
+<tr>
+    <td>Rule&nbsp;1</td>
+    <td>SoC &lt; <code>battery_low_soc_pct</code> (default 60 %)</td>
+    <td>SolarEdge <strong>ON</strong></td>
+    <td>Recharge the battery first &mdash; price doesn&rsquo;t matter when reserves are low.</td>
+</tr>
+<tr>
+    <td>Rule&nbsp;2</td>
+    <td>Car charging (<code>active_power_w &gt; charging_threshold_w</code>)</td>
+    <td>SolarEdge <strong>ON</strong></td>
+    <td>Cover instantaneous EV demand from PV instead of importing.</td>
+</tr>
+<tr>
+    <td>Rule&nbsp;3</td>
+    <td>Current-hour injection price &gt; 0</td>
+    <td>SolarEdge <strong>ON</strong></td>
+    <td>Any positive export rate makes production profitable.</td>
+</tr>
+<tr>
+    <td>Rule&nbsp;4</td>
+    <td>Forecast end-SoC during the upcoming negative-price window &lt; <code>battery_full_soc_pct</code> (default 80 %)</td>
+    <td>SolarEdge <strong>ON</strong></td>
+    <td>There&rsquo;s headroom in the battery; produce locally and store rather than export at a loss. Otherwise <strong>OFF</strong>.</td>
+</tr>
+</tbody>
+</table>
+<p>
+    A <code>hysteresis_pct</code> (default 5 %) is applied around the
+    low-SoC threshold to stop the inverter from flapping at the boundary. The
+    <strong>previous overall state</strong> is what hysteresis is sticky against
+    &mdash; once the rule engine has flipped to ON because the battery was low,
+    it stays ON until SoC reaches <code>low + hysteresis</code>.
+</p>
+<div class="callout tip">
+    <strong>Forecast horizon (Rule&nbsp;4):</strong> looks ahead
+    <code>forecast_horizon_h</code> hours (default 12) at the cached ENTSO-E prices,
+    finds the contiguous run of negative-injection-price hours from now, and
+    projects how much the small (non-SolarEdge) PV string would charge the battery
+    over that window if SolarEdge stayed OFF. If end-SoC would still be under 80 %,
+    the engine concludes there&rsquo;s room to absorb SolarEdge output too.
+</div>
+</section>
+
+<section id="cadences">
+<h2>5. Polling &amp; decision cadence</h2>
+<p>
+    The orchestrator separates two cadences so the dashboard can feel live without
+    hammering the inverter:
+</p>
+<div class="grid">
+    <div class="card">
+        <h4>poll_interval_s</h4>
+        <p class="muted">Default: 5 s</p>
+        <p>How often the tick loop reads every device and writes a <code>Reading</code>
+        row. Drives dashboard freshness and per-source health timestamps.</p>
+    </div>
+    <div class="card">
+        <h4>decision_interval_s</h4>
+        <p class="muted">Default: 60 s</p>
+        <p>How often the rule engine runs and SolarEdge gets actuated when the
+        decision flips. Runs once on startup so we don&rsquo;t sit idle for a
+        minute, then on the elapsed-time gate.</p>
+    </div>
+    <div class="card">
+        <h4>Browser refresh</h4>
+        <p class="muted">5 s, JS-driven</p>
+        <p>The dashboard polls <code>/api/state</code> + <code>/api/history</code>
+        + <code>/api/prices</code> + <code>/api/solar</code> every 5 seconds and
+        updates tiles + chart datasets in place via <code>chart.update("none")</code>
+        &mdash; no full page reload. Pauses on <code>visibilitychange</code> when
+        the tab is hidden.</p>
+    </div>
+</div>
+<div class="callout">
+    <strong>If you don&rsquo;t configure <code>decision_interval_s</code></strong>
+    it defaults to 60 s. The decision engine ran on every tick before this split
+    landed; if you upgrade an existing install you may want to set both
+    explicitly.
+</div>
+</section>
+
+<section id="dashboard">
+<h2>6. Dashboard tour</h2>
+<figure>
+    <img src="Screenshot 2026-05-04 175947.png" alt="Energy Orchestrator dashboard">
+    <figcaption>Live dashboard at <code>/</code>. Auto-refreshes every 5 s.</figcaption>
+</figure>
+<h3>State card</h3>
+<p>
+    The big banner at the top tells you what the inverter is doing right now.
+    <span style="color: var(--green); font-weight:600;">SolarEdge: ON</span>
+    or <span style="color: var(--red); font-weight:600;">OFF</span>, plus the
+    rule that fired (<code>battery_low_soc</code>, <code>positive_injection_price</code>,
+    &hellip;) and a one-line reason. If a manual override is active, an
+    <em>override: force_on / force_off</em> chip appears next to the state.
+</p>
+<h3>Tiles</h3>
+<p>The KPI tiles all use the convention "positive number = good news for the household":</p>
+<ul>
+    <li><strong>Battery SoC</strong> &mdash; %, from sonnen.</li>
+    <li><strong>Battery power</strong> &mdash; positive = charging, negative = discharging.</li>
+    <li><strong>House consumption</strong> &mdash; instantaneous draw, watts.</li>
+    <li><strong>Car charger</strong> &mdash; HomeWizard meter active power.</li>
+    <li><strong>Solar production (small + large)</strong> &mdash; wide tile with
+        the formula <code>small + large = total</code>; positive = generating.</li>
+    <li><strong>Grid import</strong> &mdash; positive = drawing from grid, negative
+        = exporting.</li>
+    <li><strong>Injection price</strong> &mdash; current hour&rsquo;s &euro;/kWh
+        (negative shown red elsewhere on the chart).</li>
+    <li><strong>Override</strong> &mdash; AUTO / FORCE_ON / FORCE_OFF, with
+        an "until HH:MM" hint when set with a duration.</li>
+    <li><strong>Expected solar today</strong> &mdash; Forecast.Solar total for
+        today, kWh.</li>
+</ul>
+<h3>Chart</h3>
+<p>The combined chart on a single canvas, with three Y-axes:</p>
+<ul>
+    <li>Gray bars = day-ahead injection &euro;/kWh (left axis). Red bars = negative
+        hours. The current hour gets a cyan accent outline.</li>
+    <li>Green line with dark halo = battery SoC % (right axis). The halo trick
+        keeps the line legible where it crosses bars or fills.</li>
+    <li>Yellow line with dark halo = <em>measured</em> total solar (small + large), kW.</li>
+    <li>Filled orange = forecast solar for the day, summed across planes (kW).</li>
+</ul>
+<p>
+    X-axis is locked to local 00:00&ndash;24:00 today. The price cache always
+    fetches yesterday + today + tomorrow (UTC) so the chart stays fully populated
+    across the local-day boundary.
+</p>
+<h3>Recent decisions</h3>
+<p>
+    Below the chart, a table of the last 24 hours of decisions: time, ON/OFF
+    badge, rule that fired, reason, and override mode if any. Useful to spot
+    chatter or to audit why the inverter flipped at 03:17.
+</p>
+</section>
+
+<section id="debug">
+<h2>7. Debug tab</h2>
+<figure>
+    <img src="Screenshot 2026-05-02 160943.png" alt="Debug tab — earlier state">
+    <figcaption>An earlier snapshot of the Debug tab. Status badges and the
+    manual-override form remain the same; later versions added a
+    "Clear all errors" button below the table and a "Recent decisions"
+    panel populated by the rule engine.</figcaption>
+</figure>
+<h3>Source health</h3>
+<p>
+    For every source the orchestrator polls, the table shows:
+</p>
+<ul>
+    <li><strong>Status</strong> &mdash; <code>OK</code> / <code>DEGRADED</code> /
+        <code>ERROR</code> / <code>UNKNOWN</code>. Whichever event (success or
+        error) is more recent decides the badge, so a successful poll right after
+        a failure clears ERROR immediately.</li>
+    <li><strong>Last success</strong> / <strong>Last error</strong> &mdash; in
+        local time.</li>
+    <li><strong>Error message</strong> &mdash; the last verbatim error string,
+        for diagnosis.</li>
+</ul>
+<p>
+    Below the table, a <strong>Clear all errors</strong> button POSTs to
+    <code>/api/source-status/clear-errors</code> &mdash; nulls
+    <code>last_error_at</code> and <code>last_error_message</code> for every row.
+    Pure ack-and-clear; the next failed poll repopulates the columns.
+</p>
+<h3>Manual override</h3>
+<p>
+    Pick a mode (<code>auto</code> / <code>force_on</code> / <code>force_off</code>),
+    optionally set a minutes duration, hit <em>Apply</em>. The override expires
+    automatically when the timer elapses; <code>auto</code> clears any active
+    override immediately. The auto-decision is still computed and logged every
+    tick while the override is active &mdash; the audit trail is honest.
+</p>
+<h3>Recent decisions &amp; active config</h3>
+<p>
+    Bottom panels: a wider 50-entry decision log, plus the active configuration
+    rendered as JSON (with secrets redacted to <code>***</code>).
+</p>
+</section>
+
+<section id="config-tab">
+<h2>8. Config &amp; logs</h2>
+<h3><code>/config</code> &mdash; in-browser editor</h3>
+<p>
+    Edit <code>config.yaml</code> from the browser without SSHing in. Three-column
+    layout grouped by Devices / Decision / System. Pydantic validation errors
+    render inline next to each input. Saves write the new YAML atomically and keep
+    a single <code>.bak</code> rotation. A successful save shows a banner
+    reminding the user that the orchestrator must be restarted for changes to
+    take effect (the price cache, decision interval, etc. are read once at
+    startup).
+</p>
+<h3><code>/logs</code> &mdash; live log viewer</h3>
+<p>
+    Streams <code>logs/energy_orchestrator.log</code> via Server-Sent Events.
+    Level dropdown (debug+ &hellip; critical), substring filter, follow-toggle,
+    pause/resume, clear; auto-trims to 1000 rows in the browser. Reconnects
+    automatically when the rotating handler swaps the file out at midnight.
+</p>
+</section>
+
+<section id="api">
+<h2>9. JSON API</h2>
+<p>All under <code>/api</code>. Browse <code>/docs</code> for the full Swagger UI.</p>
+<table>
+<thead><tr><th>Method</th><th>Path</th><th>Returns</th></tr></thead>
+<tbody>
+<tr><td><code>GET</code></td><td><code>/api/state</code></td><td>Latest reading + decision + override + sources.</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/history?h=24</code></td><td>Readings + decisions for the last N hours.</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/sources</code></td><td>Last success/error per source.</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/health</code></td><td>Config + per-source health snapshot.</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/prices</code></td><td>Cached day-ahead prices: yesterday + today + tomorrow (UTC).</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/solar</code></td><td>Cached Forecast.Solar series + per-plane breakdown + today/tomorrow Wh totals.</td></tr>
+<tr><td><code>GET</code></td><td><code>/api/logs/stream</code></td><td>Server-Sent Event stream of the rotating log file.</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/override</code></td><td><code>{ mode, minutes? }</code> &mdash; apply or clear override.</td></tr>
+<tr><td><code>POST</code></td><td><code>/api/source-status/clear-errors</code></td><td>Null out <code>last_error_*</code> on every source row.</td></tr>
+</tbody>
+</table>
+<p>
+    All timestamps are emitted as UTC-aware ISO-8601 strings (<code>"+00:00"</code>
+    suffix). The dashboard JS converts to local time client-side via
+    <code>new Date(...)</code>, so users in different timezones see local hours
+    even if the server is in UTC.
+</p>
+</section>
+
+<section id="install">
+<h2>10. Install &amp; run</h2>
+<pre><code><span class="com"># clone and install in editable mode</span>
+git clone https://github.com/Avincki/HomeEnergyCenter.git
+cd HomeEnergyCenter
+python -m venv .venv
+.venv/Scripts/activate         <span class="com"># PowerShell: .venv\Scripts\Activate.ps1</span>
+pip install -e .
+
+<span class="com"># first-time DB setup</span>
+alembic upgrade head           <span class="com"># or: stamp 0001_initial then upgrade head if</span>
+                               <span class="com"># the DB was created via init_schema</span>
+
+<span class="com"># copy the example config and fill in your hosts/tokens</span>
+cp config.example.yaml config.yaml
+$EDITOR config.yaml
+
+<span class="com"># run</span>
+python main.py                 <span class="com"># equivalent to: uvicorn ... --host 0.0.0.0 --port 8000</span>
+</code></pre>
+<p>
+    Dashboard at <code>http://localhost:8000/</code>. Debug at
+    <code>/debug</code>. Config editor at <code>/config</code>. Logs at
+    <code>/logs</code>. Swagger UI at <code>/docs</code>.
+</p>
+
+<div class="callout tip">
+    <strong>Dry-run mode is on by default.</strong> Set <code>decision.dry_run: true</code>
+    in <code>config.yaml</code> to suppress all SolarEdge writes while you observe
+    what the engine would do. Keep it on for the first few days; flip to
+    <code>false</code> only after you&rsquo;ve confirmed the decisions are sane.
+</div>
+</section>
+
+<section id="config">
+<h2>11. Configuration reference</h2>
+<p>Annotated <code>config.yaml</code> &mdash; the full file the orchestrator validates against:</p>
+<pre><code><span class="kw">poll_interval_s</span>: <span class="num">5</span>            <span class="com"># device poll cadence (Reading row written each tick)</span>
+<span class="kw">decision_interval_s</span>: <span class="num">60</span>      <span class="com"># decision/actuation cadence — typically &gt;= poll_interval_s</span>
+
+<span class="kw">sonnen</span>:
+  <span class="kw">host</span>: <span class="num">192.168.1.50</span>
+  <span class="kw">port</span>: <span class="num">80</span>
+  <span class="kw">api_version</span>: v2
+  <span class="kw">auth_token</span>: <span class="str">REPLACE_WITH_LOCAL_TOKEN</span>
+  <span class="kw">capacity_kwh</span>: <span class="num">10.0</span>
+
+<span class="kw">homewizard</span>:
+  <span class="kw">car_charger</span>:
+    <span class="kw">host</span>: <span class="num">192.168.1.51</span>
+    <span class="kw">charging_threshold_w</span>: <span class="num">500</span>
+  <span class="kw">p1_meter</span>:
+    <span class="kw">host</span>: <span class="num">192.168.1.52</span>
+  <span class="kw">small_solar</span>:
+    <span class="kw">host</span>: <span class="num">192.168.1.53</span>
+    <span class="kw">peak_w</span>: <span class="num">2000</span>
+  <span class="com"># large_solar:                # optional second meter; omit to disable</span>
+  <span class="com">#   host: 192.168.1.54</span>
+  <span class="com">#   peak_w: 6000</span>
+
+<span class="kw">solaredge</span>:
+  <span class="kw">host</span>: <span class="num">192.168.1.60</span>
+  <span class="kw">modbus_port</span>: <span class="num">1502</span>
+  <span class="kw">unit_id</span>: <span class="num">1</span>
+
+<span class="kw">prices</span>:
+  <span class="kw">provider</span>: entsoe              <span class="com"># entsoe | tibber | csv</span>
+  <span class="kw">api_key</span>: <span class="str">REPLACE_ME</span>
+  <span class="kw">area</span>: BE
+  <span class="kw">injection_factor</span>: <span class="num">1.0</span>
+  <span class="kw">injection_offset</span>: <span class="num">0.0</span>
+
+<span class="kw">solar</span>:                          <span class="com"># Forecast.Solar — omit to disable</span>
+  <span class="kw">latitude</span>: <span class="num">51.0543</span>             <span class="com"># Gent, BE</span>
+  <span class="kw">longitude</span>: <span class="num">3.7174</span>
+  <span class="kw">planes</span>:                        <span class="com"># 1–4 entries (Forecast.Solar limit)</span>
+    - <span class="kw">name</span>: east
+      <span class="kw">declination</span>: <span class="num">45</span>             <span class="com"># 0=flat, 90=vertical</span>
+      <span class="kw">azimuth</span>: <span class="num">-90</span>                <span class="com"># -90=east, 0=south, 90=west, 180=north</span>
+      <span class="kw">kwp</span>: <span class="num">6.0</span>
+    - <span class="kw">name</span>: west
+      <span class="kw">declination</span>: <span class="num">45</span>
+      <span class="kw">azimuth</span>: <span class="num">90</span>
+      <span class="kw">kwp</span>: <span class="num">6.5</span>
+
+<span class="kw">decision</span>:
+  <span class="kw">battery_low_soc_pct</span>: <span class="num">60</span>
+  <span class="kw">battery_full_soc_pct</span>: <span class="num">80</span>
+  <span class="kw">hysteresis_pct</span>: <span class="num">5</span>
+  <span class="kw">forecast_horizon_h</span>: <span class="num">12</span>
+  <span class="kw">dry_run</span>: <span class="kw">true</span>                  <span class="com"># actuator writes suppressed while true</span>
+
+<span class="kw">storage</span>:
+  <span class="kw">sqlite_path</span>: data/orchestrator.db
+  <span class="kw">history_retention_days</span>: <span class="num">90</span>
+
+<span class="kw">logging</span>:
+  <span class="kw">log_dir</span>: logs
+  <span class="kw">level</span>: INFO
+  <span class="kw">retention_days</span>: <span class="num">30</span>
+
+<span class="kw">web</span>:
+  <span class="kw">host</span>: <span class="num">0.0.0.0</span>
+  <span class="kw">port</span>: <span class="num">8000</span>
+</code></pre>
+</section>
+
+<section id="deploy">
+<h2>12. Raspberry Pi kiosk deployment</h2>
+<p>
+    Three escalating levels of polish for displaying the dashboard on a wall-mounted
+    screen:
+</p>
+<h3>Quick: chromeless app window <span class="small">no code, any OS</span></h3>
+<pre><code><span class="com"># Windows / Linux / macOS — strips browser chrome around the URL</span>
+chrome --app=http://localhost:8000
+msedge --app=http://localhost:8000
+chromium --app=http://localhost:8000
+</code></pre>
+
+<h3>Pi kiosk mode <span class="small">fullscreen, no UI, autostart at boot</span></h3>
+<pre><code><span class="com"># Raspberry Pi OS (Bookworm desktop, LXDE-pi)</span>
+mkdir -p ~/.config/lxsession/LXDE-pi
+cat &gt; ~/.config/lxsession/LXDE-pi/autostart &lt;&lt;'EOF'
+@xset s off
+@xset -dpms
+@xset s noblank
+@chromium-browser --kiosk --noerrdialogs --no-first-run \
+                  --check-for-update-interval=31536000 \
+                  http://localhost:8000
+EOF
+sudo reboot</code></pre>
+<p>
+    After reboot Chromium opens fullscreen with no chrome. To exit, SSH in and
+    <code>pkill chromium</code>, or pop a terminal with <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>T</kbd>.
+    The <code>xset</code> lines stop the screen blanking. For a Pi-Lite + cage
+    setup the equivalent is a <code>systemd</code> service running
+    <code>cage chromium-browser -- --kiosk URL</code>.
+</p>
+
+<h3>PWA polish <span class="small">optional</span></h3>
+<p>
+    Adding a <code>manifest.webmanifest</code> with <code>display: standalone</code>
+    plus a <code>&lt;link rel="manifest"&gt;</code> in <code>base.html</code> lets
+    any modern browser offer "Install Energy Orchestrator" &mdash; once installed
+    it launches in its own chromeless window from the Start menu / Pi launcher.
+    Same effect as <code>--app=URL</code> but the user does it once via the
+    browser&rsquo;s UI instead of typing a long flag.
+</p>
+</section>
+
+<section id="troubleshoot">
+<h2>13. Troubleshooting</h2>
+
+<h3>"no such column: readings.large_solar_w"</h3>
+<p>
+    The DB schema is older than the ORM model. Either the database was created
+    via <code>init_schema</code> (no alembic version stamp), or you upgraded the
+    code and forgot to run migrations. Stop the orchestrator, then:
+</p>
+<pre><code>alembic stamp 0001_initial    <span class="com"># only if alembic_version table is empty</span>
+alembic upgrade head</code></pre>
+
+<h3>HomeWizard device "connection refused"</h3>
+<p>
+    Ping works, port 80 refuses. The local API toggle is off. Open the HomeWizard
+    Energy app &rarr; pick the device &rarr; <em>Settings</em> &rarr; enable
+    <em>Local API</em>. Restart not required.
+</p>
+
+<h3>SolarEdge actuation "unexpected keyword 'slave'"</h3>
+<p>
+    pymodbus 3.7+ renamed the kwarg from <code>slave=</code> to <code>device_id=</code>;
+    by 3.11+ the deprecated alias is gone. The current codebase already uses
+    <code>device_id=</code>; if you see this, you&rsquo;re on an old commit or an
+    old pymodbus.
+</p>
+
+<h3>Dashboard tile values stuck for 30+ seconds</h3>
+<p>
+    The browser is polling correctly but no new <code>Reading</code> rows are
+    being written. Check <code>poll_interval_s</code> in <code>config.yaml</code>
+    &mdash; if it&rsquo;s 30, that&rsquo;s your refresh rate. Set it to 5 for live
+    tiles. Restart the orchestrator after editing.
+</p>
+
+<h3>Dashboard chart starts at 02:00 instead of 00:00</h3>
+<p>
+    The chart x-axis is local-day; in zones east of UTC the first hours of
+    local-today live in yesterday&rsquo;s UTC date. The orchestrator now fetches
+    yesterday + today + tomorrow (3 days UTC) so the chart stays full. If you
+    still see a gap, force a price refresh:
+    <code>curl http://localhost:8000/api/sources</code> and check the
+    <code>prices</code> source <code>last_success_at</code>.
+</p>
+
+<h3>Status badge shows ERROR with a stale message</h3>
+<p>
+    Pre-fix behavior: an error within 5 minutes forced ERROR even after a
+    successful recovery poll. Current behavior: most-recent event wins, so any
+    successful tick after the error clears the badge. If you still want to wipe
+    the historical "Last error" timestamp, click <em>Clear all errors</em> on
+    the Debug tab.
+</p>
+</section>
+
+<section id="stack">
+<h2>14. Tech stack</h2>
+<div class="grid">
+    <div class="card">
+        <h4>Web</h4>
+        <p class="muted">FastAPI, Uvicorn, Jinja2, Chart.js (vendored, no CDN)</p>
+    </div>
+    <div class="card">
+        <h4>Data</h4>
+        <p class="muted">SQLAlchemy 2.0 async, aiosqlite, Alembic migrations</p>
+    </div>
+    <div class="card">
+        <h4>Devices</h4>
+        <p class="muted">aiohttp + tenacity for HTTP, pymodbus &gt;=3.7 for SolarEdge</p>
+    </div>
+    <div class="card">
+        <h4>Config</h4>
+        <p class="muted">Pydantic v2 (frozen, extra=forbid), YAML, browser editor at <code>/config</code></p>
+    </div>
+    <div class="card">
+        <h4>Logging</h4>
+        <p class="muted">structlog with daily-rotating JSON file + console mirror, live <code>/logs</code> SSE viewer</p>
+    </div>
+    <div class="card">
+        <h4>Tests</h4>
+        <p class="muted">pytest + pytest-asyncio + pytest-mock, 253 passing, ruff + black + mypy --strict in CI</p>
+    </div>
+</div>
+<p>
+    The whole project is a single Python package with seven sub-packages
+    (<code>config</code>, <code>data</code>, <code>devices</code>, <code>decision</code>,
+    <code>prices</code>, <code>solar</code>, <code>web</code>). The tick loop
+    in <code>orchestrator.py</code> is the only background task; FastAPI&rsquo;s
+    <code>lifespan</code> starts it on app startup and cancels it on shutdown.
+</p>
+</section>
+
+<footer>
+    Generated from project <code>README</code>-like sources:
+    <code>project_specs.txt</code>, <code>CLAUDE.md</code>,
+    <code>CLAUDE.alex-vinckier.md</code>, <code>CLAUDE.alex-vinckier.history.md</code>,
+    <code>WORKPLAN.md</code>, plus the dashboard / debug screenshots.
+    Open this file directly in a browser; the screenshots are referenced by
+    relative path so keep them next to <code>tutorial.html</code>.
+</footer>
+
+</div>
+</body>
+</html>

@@ -39,17 +39,20 @@ def _make_response(registers: list[int], *, is_error: bool = False) -> MagicMock
 def _patch_modbus(
     mocker: MockerFixture,
     *,
-    responses: dict[int, MagicMock] | None = None,
-    default_response: MagicMock | None = None,
-    read_side_effect: BaseException | None = None,
+    input_responses: dict[int, MagicMock] | None = None,
+    holding_responses: dict[int, MagicMock] | None = None,
+    input_side_effect: BaseException | None = None,
+    holding_side_effect: BaseException | None = None,
+    both_side_effect: BaseException | None = None,
     connect_returns: bool = True,
     connect_raises: BaseException | None = None,
 ) -> MagicMock:
-    """Patch ``AsyncModbusTcpClient`` and route reads by start address.
+    """Patch ``AsyncModbusTcpClient`` and route both input + holding reads.
 
-    ``responses`` keys are register addresses; the matching MagicMock is
-    returned when the client reads that address. ``default_response`` covers
-    addresses not explicitly mapped (useful for "everything succeeds" tests).
+    ``input_responses`` / ``holding_responses`` map start addresses to the
+    response the client should get for that function code. Diagnostic-dump
+    sweeps (large counts at known base addresses) are auto-routed to a
+    zero block so tests don't have to mock them out individually.
     """
     mock_cls = mocker.patch("energy_orchestrator.devices.etrel.AsyncModbusTcpClient")
     from pymodbus.client import AsyncModbusTcpClient as _Real
@@ -72,45 +75,59 @@ def _patch_modbus(
 
     instance.close = MagicMock()
 
-    if read_side_effect is not None:
-        instance.read_holding_registers = AsyncMock(side_effect=read_side_effect)
-    else:
+    def _make_handler(
+        responses: dict[int, MagicMock] | None,
+        side_effect: BaseException | None,
+    ):
+        if side_effect is not None or both_side_effect is not None:
+            return AsyncMock(side_effect=side_effect or both_side_effect)
 
         async def _read(*, address: int, count: int, device_id: int) -> MagicMock:
-            # Diagnostic-dump paths: large sweeps at the live block (addr 0)
-            # and the info block (addr 990). Tests don't care about contents —
-            # return zeros so the dump succeeds silently and the field reads
-            # that follow stay deterministic.
+            # Diagnostic-dump sweeps: large reads at the live block (addr 0)
+            # and the info block (addr 990). Tests don't care about contents
+            # so return zeros — keeps field reads deterministic afterward.
             if address == 0 and count >= 16:
                 return _make_response([0] * count)
             if address == 990 and count >= 16:
                 return _make_response([0] * count)
             if responses and address in responses:
                 return responses[address]
-            if default_response is not None:
-                return default_response
             return _make_response([0] * count)
 
-        instance.read_holding_registers = AsyncMock(side_effect=_read)
+        return AsyncMock(side_effect=_read)
 
+    instance.read_input_registers = _make_handler(input_responses, input_side_effect)
+    instance.read_holding_registers = _make_handler(holding_responses, holding_side_effect)
     return cast(MagicMock, instance)
 
 
-def _all_ok_responses(
+def _ok_input_responses(
     *,
     status: int = 2,
     setpoint_a: float = 16.0,
     voltage_l1_v: float = 230.5,
+    current_l1_a: float = 14.2,
     power_kw: float = 3.7,
-    custom_max_a: int = 32,
+    custom_max_a: float = 32.0,
     big_endian: bool = True,
 ) -> dict[int, MagicMock]:
     return {
         0: _make_response([status]),
         4: _make_response(list(_f32_to_regs(setpoint_a, big=big_endian))),
         8: _make_response(list(_f32_to_regs(voltage_l1_v, big=big_endian))),
+        14: _make_response(list(_f32_to_regs(current_l1_a, big=big_endian))),
         26: _make_response(list(_f32_to_regs(power_kw, big=big_endian))),
-        1028: _make_response([custom_max_a]),
+        1028: _make_response(list(_f32_to_regs(custom_max_a, big=big_endian))),
+    }
+
+
+def _ok_holding_responses(
+    *,
+    set_current_a: float = 16.0,
+    big_endian: bool = True,
+) -> dict[int, MagicMock]:
+    return {
+        8: _make_response(list(_f32_to_regs(set_current_a, big=big_endian))),
     }
 
 
@@ -120,9 +137,8 @@ def _all_ok_responses(
 async def test_read_data_decodes_all_fields(mocker: MockerFixture) -> None:
     instance = _patch_modbus(
         mocker,
-        responses=_all_ok_responses(
-            status=2, setpoint_a=16.0, voltage_l1_v=230.5, power_kw=3.7, custom_max_a=32
-        ),
+        input_responses=_ok_input_responses(),
+        holding_responses=_ok_holding_responses(set_current_a=16.0),
     )
     async with EtrelInchClient(_config()) as client:
         reading = await client.read_data()
@@ -132,58 +148,110 @@ async def test_read_data_decodes_all_fields(mocker: MockerFixture) -> None:
     assert reading.data["status_code"] == 2.0
     assert reading.data["status"] == "Charging"
     assert reading.data["setpoint_a"] == pytest.approx(16.0, rel=1e-5)
+    assert reading.data["set_current_a"] == pytest.approx(16.0, rel=1e-5)
     assert reading.data["voltage_l1_v"] == pytest.approx(230.5, rel=1e-5)
+    assert reading.data["current_l1_a"] == pytest.approx(14.2, rel=1e-5)
     assert reading.data["power_kw"] == pytest.approx(3.7, rel=1e-5)
     assert reading.data["power_w"] == pytest.approx(3700.0, rel=1e-5)
     assert reading.data["custom_max_a"] == 32.0
 
-    # 7 reads expected: status (cheap probe), diagnostic dump live block,
-    # diagnostic dump info block, voltage, setpoint, power_total, custom_max.
-    calls = instance.read_holding_registers.await_args_list
-    addresses = [(c.kwargs["address"], c.kwargs["count"]) for c in calls]
-    assert addresses == [
+    # Status / setpoint / voltage / current / power / custom-max all hit
+    # input registers; only the set-current-setpoint readback hits holding.
+    in_calls = [
+        (c.kwargs["address"], c.kwargs["count"])
+        for c in instance.read_input_registers.await_args_list
+    ]
+    ho_calls = [
+        (c.kwargs["address"], c.kwargs["count"])
+        for c in instance.read_holding_registers.await_args_list
+    ]
+    # Input: status probe → diagnostic dumps (live + info) → field reads.
+    assert in_calls[:7] == [
         (0, 1),
         (0, 48),
         (990, 50),
         (8, 2),
         (4, 2),
+        (14, 2),
         (26, 2),
-        (1028, 1),
     ]
+    # Custom max current is float32 (2 regs) on this firmware, not uint16.
+    assert (1028, 2) in in_calls
+    # Holding: diagnostic dump for both blocks + the set-current readback.
+    assert (0, 48) in ho_calls
+    assert (990, 50) in ho_calls
+    assert (8, 2) in ho_calls
+
+
+async def test_holding_set_current_failure_does_not_kill_tick(mocker: MockerFixture) -> None:
+    """Holding-register reads can be blocked even when input reads work
+    (Smart-E-Grid restricted firmware). The tick should continue and surface
+    set_current_a as None rather than raising."""
+    instance = _patch_modbus(
+        mocker,
+        input_responses=_ok_input_responses(),
+        holding_side_effect=ModbusException("holding registers blocked"),
+    )
+    async with EtrelInchClient(_config()) as client:
+        reading = await client.read_data()
+
+    assert reading is not None
+    assert reading.data["set_current_a"] is None
+    assert reading.data["setpoint_a"] == pytest.approx(16.0, rel=1e-5)
+    # Holding reads were attempted (dump) but the field read also failed cleanly.
+    assert instance.read_holding_registers.await_count >= 1
 
 
 async def test_custom_max_is_cached_after_first_read(mocker: MockerFixture) -> None:
-    """Reg 1028 is installer-configured static — only fetched once per session."""
-    instance = _patch_modbus(mocker, responses=_all_ok_responses())
+    """Reg 1028 (input) is installer-configured static — fetched once per session."""
+    instance = _patch_modbus(
+        mocker,
+        input_responses=_ok_input_responses(),
+        holding_responses=_ok_holding_responses(),
+    )
     client = EtrelInchClient(_config())
     await client.read_data()
     await client.read_data()
     await client.read_data()
     await client.close()
 
-    # First tick reads 1028 once; subsequent ticks must skip it.
-    addresses = [call.kwargs["address"] for call in instance.read_holding_registers.await_args_list]
+    addresses = [c.kwargs["address"] for c in instance.read_input_registers.await_args_list]
     assert addresses.count(1028) == 1
 
 
 async def test_custom_max_retried_when_first_attempt_failed(mocker: MockerFixture) -> None:
-    """If reg 1028 silently fails, we keep trying it on later ticks."""
+    """If reg 1028 silently fails, the next tick retries."""
     call_count = {"n": 0}
 
-    async def _read(*, address: int, count: int, device_id: int) -> MagicMock:
+    async def _input_read(*, address: int, count: int, device_id: int) -> MagicMock:
+        if address == 0 and count >= 16:
+            return _make_response([0] * count)
+        if address == 990 and count >= 16:
+            return _make_response([0] * count)
         if address == 1028:
             call_count["n"] += 1
             if call_count["n"] == 1:
                 raise TimeoutError()
-            return _make_response([32])
+            return _make_response(list(_f32_to_regs(32.0)))
         if address == 0:
             return _make_response([2])
         if address == 4:
             return _make_response(list(_f32_to_regs(16.0)))
         if address == 8:
             return _make_response(list(_f32_to_regs(230.5)))
+        if address == 14:
+            return _make_response(list(_f32_to_regs(14.2)))
         if address == 26:
             return _make_response(list(_f32_to_regs(3.7)))
+        return _make_response([0] * count)
+
+    async def _holding_read(*, address: int, count: int, device_id: int) -> MagicMock:
+        if address == 0 and count >= 16:
+            return _make_response([0] * count)
+        if address == 990 and count >= 16:
+            return _make_response([0] * count)
+        if address == 8:
+            return _make_response(list(_f32_to_regs(16.0)))
         return _make_response([0] * count)
 
     mock_cls = mocker.patch("energy_orchestrator.devices.etrel.AsyncModbusTcpClient")
@@ -200,16 +268,15 @@ async def test_custom_max_retried_when_first_attempt_failed(mocker: MockerFixtur
 
     instance.connect = AsyncMock(side_effect=_connect)
     instance.close = MagicMock()
-    instance.read_holding_registers = AsyncMock(side_effect=_read)
+    instance.read_input_registers = AsyncMock(side_effect=_input_read)
+    instance.read_holding_registers = AsyncMock(side_effect=_holding_read)
 
     client = EtrelInchClient(_config())
     r1 = await client.read_data()
     r2 = await client.read_data()
     await client.close()
 
-    # First tick: reg 1028 timed out → custom_max_a is None.
     assert r1 is not None and r1.data["custom_max_a"] is None
-    # Second tick: reg 1028 retried, this time returning 32.
     assert r2 is not None and r2.data["custom_max_a"] == 32.0
     assert call_count["n"] == 2
 
@@ -222,9 +289,11 @@ async def test_read_data_swaps_word_order_when_voltage_implausible(
     second Modbus read, since the same register bytes decode both ways."""
     read_count_at_addr_8 = {"n": 0}
 
-    async def _read(*, address: int, count: int, device_id: int) -> MagicMock:
+    async def _input_read(*, address: int, count: int, device_id: int) -> MagicMock:
         if address == 0 and count >= 16:
-            return _make_response([0] * count)  # diagnostic dump
+            return _make_response([0] * count)
+        if address == 990 and count >= 16:
+            return _make_response([0] * count)
         if address == 0:
             return _make_response([2])
         if address == 8:
@@ -232,10 +301,21 @@ async def test_read_data_swaps_word_order_when_voltage_implausible(
             return _make_response(list(_f32_to_regs(229.0, big=False)))
         if address == 4:
             return _make_response(list(_f32_to_regs(10.0, big=False)))
+        if address == 14:
+            return _make_response(list(_f32_to_regs(8.5, big=False)))
         if address == 26:
             return _make_response(list(_f32_to_regs(2.3, big=False)))
         if address == 1028:
-            return _make_response([32])
+            return _make_response(list(_f32_to_regs(32.0, big=False)))
+        return _make_response([0] * count)
+
+    async def _holding_read(*, address: int, count: int, device_id: int) -> MagicMock:
+        if address == 0 and count >= 16:
+            return _make_response([0] * count)
+        if address == 990 and count >= 16:
+            return _make_response([0] * count)
+        if address == 8:
+            return _make_response(list(_f32_to_regs(10.0, big=False)))
         return _make_response([0] * count)
 
     mock_cls = mocker.patch("energy_orchestrator.devices.etrel.AsyncModbusTcpClient")
@@ -252,14 +332,14 @@ async def test_read_data_swaps_word_order_when_voltage_implausible(
 
     instance.connect = AsyncMock(side_effect=_connect)
     instance.close = MagicMock()
-    instance.read_holding_registers = AsyncMock(side_effect=_read)
+    instance.read_input_registers = AsyncMock(side_effect=_input_read)
+    instance.read_holding_registers = AsyncMock(side_effect=_holding_read)
 
     async with EtrelInchClient(_config()) as client:
         reading = await client.read_data()
 
     assert reading is not None
     assert reading.data["voltage_l1_v"] == pytest.approx(229.0, rel=1e-4)
-    # Subsequent fields decode with the now-sticky little-endian order.
     assert reading.data["power_kw"] == pytest.approx(2.3, rel=1e-4)
     assert reading.data["setpoint_a"] == pytest.approx(10.0, rel=1e-4)
     # Voltage was read once — local decode handles both word orders.
@@ -267,9 +347,13 @@ async def test_read_data_swaps_word_order_when_voltage_implausible(
 
 
 async def test_read_unknown_status_falls_back_to_label(mocker: MockerFixture) -> None:
-    responses = _all_ok_responses()
+    responses = _ok_input_responses()
     responses[0] = _make_response([42])
-    _patch_modbus(mocker, responses=responses)
+    _patch_modbus(
+        mocker,
+        input_responses=responses,
+        holding_responses=_ok_holding_responses(),
+    )
     async with EtrelInchClient(_config()) as client:
         reading = await client.read_data()
     assert reading is not None
@@ -277,10 +361,14 @@ async def test_read_unknown_status_falls_back_to_label(mocker: MockerFixture) ->
 
 
 async def test_status_read_isError_raises_protocol_error(mocker: MockerFixture) -> None:
-    """First read (status) is the cheap probe; an error result here aborts."""
-    responses = _all_ok_responses()
+    """Status (the cheap probe) is on input registers; an error result aborts."""
+    responses = _ok_input_responses()
     responses[0] = _make_response([0], is_error=True)
-    _patch_modbus(mocker, responses=responses)
+    _patch_modbus(
+        mocker,
+        input_responses=responses,
+        holding_responses=_ok_holding_responses(),
+    )
     async with EtrelInchClient(_config()) as client:
         with pytest.raises(DeviceProtocolError, match="read returned error"):
             await client.read_data()
@@ -289,14 +377,14 @@ async def test_status_read_isError_raises_protocol_error(mocker: MockerFixture) 
 async def test_read_modbus_exception_raises_connection_error(
     mocker: MockerFixture,
 ) -> None:
-    _patch_modbus(mocker, read_side_effect=ModbusException("bus error"))
+    _patch_modbus(mocker, both_side_effect=ModbusException("bus error"))
     async with EtrelInchClient(_config()) as client:
         with pytest.raises(DeviceConnectionError, match="read error"):
             await client.read_data()
 
 
 async def test_read_timeout_raises_timeout_error(mocker: MockerFixture) -> None:
-    _patch_modbus(mocker, read_side_effect=TimeoutError())
+    _patch_modbus(mocker, both_side_effect=TimeoutError())
     async with EtrelInchClient(_config()) as client:
         with pytest.raises(DeviceTimeoutError, match="read timed out"):
             await client.read_data()
@@ -333,13 +421,17 @@ async def test_connect_timeout_raises_timeout_error(mocker: MockerFixture) -> No
 # ----- health check ------------------------------------------------------------
 
 
-async def test_health_check_reads_only_status_register(mocker: MockerFixture) -> None:
-    """health_check is the cheap reachability probe — single 1-reg read at 0."""
-    instance = _patch_modbus(mocker, responses={0: _make_response([0])})
+async def test_health_check_reads_only_status_input_register(mocker: MockerFixture) -> None:
+    """health_check is the cheap reachability probe — single 1-reg input read at 0."""
+    instance = _patch_modbus(mocker, input_responses={0: _make_response([0])})
     async with EtrelInchClient(_config()) as client:
         assert await client.health_check() is True
-    addresses = [call.kwargs["address"] for call in instance.read_holding_registers.await_args_list]
-    assert addresses == [0]
+    in_calls = [
+        (c.kwargs["address"], c.kwargs["count"])
+        for c in instance.read_input_registers.await_args_list
+    ]
+    assert in_calls == [(0, 1)]
+    assert instance.read_holding_registers.await_count == 0
 
 
 async def test_health_check_false_on_failure(mocker: MockerFixture) -> None:
@@ -352,7 +444,7 @@ async def test_health_check_false_on_failure(mocker: MockerFixture) -> None:
 
 
 async def test_connection_dropped_on_modbus_error(mocker: MockerFixture) -> None:
-    instance = _patch_modbus(mocker, read_side_effect=ModbusException("transient"))
+    instance = _patch_modbus(mocker, both_side_effect=ModbusException("transient"))
 
     client = EtrelInchClient(_config())
     with pytest.raises(DeviceConnectionError):

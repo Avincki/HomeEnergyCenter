@@ -1,27 +1,61 @@
 """Etrel INCH Home/Pro EV charger Modbus TCP client.
 
-Reads connector-1 real-time values (status, target current setpoint, L1
-voltage, active power total) plus the installer-configured custom max
-current (reg 1028, cached once). Float32 values use big-endian word order
-per the Etrel docs; we sanity-check that against L1 voltage and fall back
-to little-endian if not.
+Etrel exposes data in **two distinct address spaces** with different
+function codes — getting this wrong is the difference between reading
+real telemetry and reading all-zero garbage:
 
-Reads are issued **per field** rather than as one block so that a silent
-firmware-specific gap on a single register doesn't poison the whole
-reading, and so failure logs pinpoint exactly which address didn't
-respond. We also pass ``retries=1`` to pymodbus — the default 3 makes
-each silent timeout cost ~15 s, well over the 5 s tick budget.
+* **Input registers** (read via FC 0x04 / ``read_input_registers``):
+  read-only telemetry — connector status, voltages, currents, active
+  power, energy, EV info. This is where the live data lives.
+
+* **Holding registers** (read via FC 0x03 / ``read_holding_registers``,
+  written via FC 0x06 / 0x10): write-side controls — set current
+  setpoint, set power setpoint, release/cancel, pause. Reading a
+  holding register returns the last value written to it (so the
+  set-current setpoint reads back as the active write-side limit).
+
+Both address spaces use the same numeric addresses (0, 4, 8, ...),
+which is why a function-code mix-up returns plausible-looking-but-wrong
+values: ``read_holding_registers(8)`` returns the write-side current
+setpoint while ``read_input_registers(8)`` returns the L1 voltage. Both
+read OK; both decode as float32; only one is what you wanted.
+
+Float32 values use big-endian word order per the Etrel docs; we
+sanity-check that against L1 voltage (~230 V) and fall back to
+little-endian if not.
+
+Reads are issued **per field** rather than as one block so that a
+silent firmware-specific gap on a single register doesn't poison the
+whole reading, and so failure logs pinpoint exactly which address
+didn't respond. We also pass ``retries=1`` to pymodbus — the default 3
+makes each silent timeout cost ~15 s, well over the 5 s tick budget.
 
 Read-only for now; the write path (set/cancel current setpoint, pause/
-stop) is intentionally deferred until the official register addresses
-from the Etrel XLSX are wired in alongside the control loop.
+stop) is intentionally deferred until the orchestrator has a control
+loop that needs it.
 
-References (registers, port 502, unit ID 1):
-  *  0          uint16   connector status (0=Available .. 8=Faulted)
-  *  4..5       float32  target current setpoint (A) — read-back of override
-  *  8..9       float32  L1 voltage (V) — endianness sanity check (~230 V)
-  * 26..27      float32  active power total (kW) — primary "what's drawn"
-  *  1028      uint16   custom max current (A) — installer ceiling, cached
+References (port 502, configurable unit ID, default 1):
+
+  Input registers (telemetry):
+    *   0          uint16   connector status (0=Available .. 8=Faulted)
+    *   4..5       float32  target current applied (A) — read-back of
+                            the active limit, regardless of source
+                            (Modbus override / Sonnen backend / EV cap)
+    *   8..9       float32  L1 voltage (V) — endianness sanity check
+    *  14..15      float32  L1 current (A)
+    *  26..27      float32  active power total (kW)
+    *  1028..1029  float32  custom max current (A) — installer ceiling
+                            (Etrel docs called this uint16; on this
+                            firmware it's actually a float32 — the raw
+                            uint16 readback was 0x4180, which is exactly
+                            the high half of IEEE 754 16.0 BE)
+
+  Holding registers (write-side, also readable for verification):
+    *   8..9       float32  set current setpoint (write target & readback)
+
+Source: Etrel KB (Modbus Communication with INCH products) plus the
+Home Assistant community thread that reverse-engineered the input-vs-
+holding split for the Sonnen Smart-E-Grid variant.
 """
 
 from __future__ import annotations
@@ -46,13 +80,23 @@ from energy_orchestrator.devices.registry import register_device
 
 logger = structlog.stdlib.get_logger(__name__)
 
-# Connector-1 registers we read live every tick.
-_REG_STATUS = 0  # uint16
-_REG_SETPOINT_A = 4  # float32 (2 regs)
-_REG_VOLTAGE_L1 = 8  # float32 (2 regs)
-_REG_POWER_TOTAL_KW = 26  # float32 (2 regs)
+# Function-code identifiers — used purely for log breadcrumbs so a failure
+# context immediately tells us which Modbus address space was being used.
+_FC_INPUT = "input"
+_FC_HOLDING = "holding"
+
+# Input register offsets (telemetry, read-only).
+_IN_STATUS = 0  # uint16
+_IN_TARGET_CURRENT_A = 4  # float32 (2 regs)
+_IN_VOLTAGE_L1 = 8  # float32 (2 regs)
+_IN_CURRENT_L1 = 14  # float32 (2 regs)
+_IN_POWER_TOTAL_KW = 26  # float32 (2 regs)
 # Installer-configured ceiling — static, cached after first successful read.
-_REG_CUSTOM_MAX_CURRENT_A = 1028  # uint16
+# Doc says uint16 but the firmware encodes this as float32 (regs 1028..1029).
+_IN_CUSTOM_MAX_CURRENT_A = 1028  # float32 (2 regs)
+
+# Holding register offsets (write-side, also readable for verification).
+_HOLD_SET_CURRENT_A = 8  # float32 (2 regs) — write target
 
 # Plausible L1-voltage envelope used for the endianness sanity check —
 # anything outside is taken as evidence of swapped word order. Float32 with
@@ -93,25 +137,25 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         # Detected on each successful tick from L1 voltage. Defaults to the
         # documented ``"big"`` so the very first decode has a sane guess.
         self._word_order: str = "big"
-        # Installer-configured ceiling; cached after the first successful
-        # read since it doesn't change at runtime. ``None`` means "haven't
-        # successfully read it yet".
-        self._custom_max_a: int | None = None
-        # One-shot register dump triggered on the first successful read. The
-        # documented Etrel register map has shifted between firmware versions,
-        # so when our decoded values look implausible we want a single full
-        # snapshot in the log to map the actual layout — not a per-tick spam.
+        # Installer-configured ceiling (float32 amps); cached after the
+        # first successful read since it doesn't change at runtime.
+        # ``None`` means "haven't successfully read it yet".
+        self._custom_max_a: float | None = None
+        # One-shot register dump triggered on the first successful read,
+        # covering both input AND holding address spaces so a future
+        # function-code mismatch is debuggable from a single log line.
         self._dump_done: bool = False
 
     @property
     def _endpoint(self) -> str:
         return f"{self.config.host}:{self.config.modbus_port}/unit-{self.config.unit_id}"
 
-    def _log_ctx(self, address: int, count: int) -> dict[str, Any]:
+    def _log_ctx(self, fc: str, address: int, count: int) -> dict[str, Any]:
         return {
             "host": self.config.host,
             "modbus_port": self.config.modbus_port,
             "unit_id": self.config.unit_id,
+            "fc": fc,
             "address": address,
             "count": count,
         }
@@ -152,55 +196,66 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
                 raise DeviceConnectionError(f"Etrel could not connect at {self._endpoint}")
         return self._client
 
-    async def _read_registers(self, address: int, count: int, *, label: str) -> list[int]:
-        """One holding-register read with structured failure logs.
+    async def _read(
+        self, fc: str, address: int, count: int, *, label: str
+    ) -> list[int]:
+        """One Modbus read with structured failure logs.
 
-        ``label`` identifies the field this read was for so the failure log
-        is immediately readable (``status`` / ``setpoint_a`` / etc.) without
-        needing to look up addresses. The actual frame details land in the
-        bound context for the curious / when escalating.
+        ``fc`` is "input" (FC 0x04 — read-only telemetry) or "holding" (FC
+        0x03 — write-back of holding registers). The function code is
+        bound into both the failure logs and the raised exception so a
+        future function-code mix-up is immediately obvious.
         """
         client = await self._ensure_connected()
-        ctx = self._log_ctx(address, count)
+        ctx = self._log_ctx(fc, address, count)
         try:
-            result = await client.read_holding_registers(
-                address=address,
-                count=count,
-                device_id=self.config.unit_id,
-            )
+            if fc == _FC_INPUT:
+                result = await client.read_input_registers(
+                    address=address,
+                    count=count,
+                    device_id=self.config.unit_id,
+                )
+            else:
+                result = await client.read_holding_registers(
+                    address=address,
+                    count=count,
+                    device_id=self.config.unit_id,
+                )
         except TimeoutError as e:
             await self._drop_connection()
             logger.warning("etrel read timeout", field=label, **ctx)
             raise DeviceTimeoutError(
-                f"Etrel read timed out at {self._endpoint} ({label} addr={address} count={count})"
+                f"Etrel read timed out at {self._endpoint} "
+                f"({label} fc={fc} addr={address} count={count})"
             ) from e
         except ModbusException as e:
             await self._drop_connection()
             logger.warning("etrel read modbus error", field=label, error=str(e), **ctx)
             raise DeviceConnectionError(
-                f"Etrel read error at {self._endpoint} ({label} addr={address} count={count}): {e}"
+                f"Etrel read error at {self._endpoint} "
+                f"({label} fc={fc} addr={address} count={count}): {e}"
             ) from e
         if result.isError():
-            logger.warning("etrel read returned error result", field=label, result=str(result), **ctx)
+            logger.warning(
+                "etrel read returned error result", field=label, result=str(result), **ctx
+            )
             raise DeviceProtocolError(
                 f"Etrel read returned error at {self._endpoint} "
-                f"({label} addr={address} count={count}): {result}"
+                f"({label} fc={fc} addr={address} count={count}): {result}"
             )
         return list(result.registers)
 
-    async def _read_uint16(self, address: int, *, label: str) -> int:
-        regs = await self._read_registers(address, 1, label=label)
+    async def _read_input_uint16(self, address: int, *, label: str) -> int:
+        regs = await self._read(_FC_INPUT, address, 1, label=label)
         return int(regs[0])
 
-    async def _read_float32(self, address: int, *, label: str) -> float:
-        regs = await self._read_registers(address, 2, label=label)
-        return float(
-            AsyncModbusTcpClient.convert_from_registers(
-                regs,
-                AsyncModbusTcpClient.DATATYPE.FLOAT32,
-                word_order=self._word_order,
-            )
-        )
+    async def _read_input_float32(self, address: int, *, label: str) -> float:
+        regs = await self._read(_FC_INPUT, address, 2, label=label)
+        return self._decode_pair(regs, 0, word_order=self._word_order)
+
+    async def _read_holding_float32(self, address: int, *, label: str) -> float:
+        regs = await self._read(_FC_HOLDING, address, 2, label=label)
+        return self._decode_pair(regs, 0, word_order=self._word_order)
 
     def _looks_like_voltage(self, v: float) -> bool:
         return _VOLTAGE_MIN_V <= v <= _VOLTAGE_MAX_V
@@ -216,62 +271,66 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         )
 
     async def _diagnostic_dump(self) -> None:
-        """Read the connector-1 live block and the device-info block, then
-        log both with raw values + float32 interpretations in both word orders.
+        """Read the connector-1 live block + device-info block for **both**
+        function codes and log each register's raw value plus float32
+        interpretations in both word orders.
 
-        Used once per session when the documented register map doesn't decode
-        plausibly — different Etrel firmware versions have shipped with
-        different layouts, and the only way to identify the real one without
-        the per-firmware XLSX is to eyeball a full dump for values that match
-        ground truth (mains voltage ≈ 230 V, firmware string ≥ 7.1.1, …).
-
-        Live and info blocks are read independently so a Smart-E-Grid setup
-        that exposes one but not the other still produces useful output.
+        Used once per session. The two-function-code dump means a future
+        layout shift OR function-code mix-up is immediately diagnosable
+        from a single log entry — without it we'd burn a debugging cycle
+        figuring out which address space the Etrel is actually populating.
         """
         if self._dump_done:
             return
         # Mark before the reads so a failure doesn't queue infinite retries.
         self._dump_done = True
 
-        try:
-            live_regs = await self._read_registers(0, 48, label="diagnostic_dump_live")
-        except DeviceError:
-            live_regs = None
+        async def _safe_read(fc: str, address: int, count: int, label: str) -> list[int] | None:
+            try:
+                return await self._read(fc, address, count, label=label)
+            except DeviceError:
+                return None
 
-        try:
-            info_regs = await self._read_registers(990, 50, label="diagnostic_dump_info")
-        except DeviceError:
-            info_regs = None
+        in_live = await _safe_read(_FC_INPUT, 0, 48, "diagnostic_dump_input_live")
+        in_info = await _safe_read(_FC_INPUT, 990, 50, "diagnostic_dump_input_info")
+        ho_live = await _safe_read(_FC_HOLDING, 0, 48, "diagnostic_dump_holding_live")
+        ho_info = await _safe_read(_FC_HOLDING, 990, 50, "diagnostic_dump_holding_info")
 
-        if live_regs is None and info_regs is None:
-            logger.warning("etrel diagnostic dump unavailable — both blocks failed")
+        if all(b is None for b in (in_live, in_info, ho_live, ho_info)):
+            logger.warning("etrel diagnostic dump unavailable — every block read failed")
             return
 
         lines = [
             f"etrel register dump (address: raw_uint16 | float32_big | float32_little) "
             f"host={self.config.host} unit_id={self.config.unit_id}",
         ]
-        if live_regs is not None:
-            lines.append("  -- connector 1 live block (regs 0..47) --")
-            self._format_block(lines, live_regs, base_address=0)
-        else:
-            lines.append("  -- connector 1 live block: read failed --")
-
-        if info_regs is not None:
-            lines.append("  -- device info block (regs 990..1039) --")
-            # ASCII decode helper for the string regs (serial/model/HW ver/SW
-            # ver) — Etrel packs two ASCII chars per register big-endian.
-            ascii_text = self._registers_to_ascii(info_regs)
-            self._format_block(lines, info_regs, base_address=990)
-            lines.append(f"  -- info block as ASCII: {ascii_text!r}")
-        else:
-            lines.append("  -- device info block: read failed --")
-
+        self._append_block(lines, "input", "live (regs 0..47)", in_live, base_address=0)
+        self._append_block(
+            lines, "input", "info (regs 990..1039)", in_info, base_address=990, with_ascii=True
+        )
+        self._append_block(lines, "holding", "live (regs 0..47)", ho_live, base_address=0)
+        self._append_block(
+            lines, "holding", "info (regs 990..1039)", ho_info, base_address=990, with_ascii=True
+        )
         # Single multi-line log entry — keeps the dump grouped in the log
         # viewer instead of interleaved with subsequent ticks.
         logger.info("\n".join(lines))
 
-    def _format_block(self, lines: list[str], regs: list[int], *, base_address: int) -> None:
+    def _append_block(
+        self,
+        lines: list[str],
+        fc: str,
+        label: str,
+        regs: list[int] | None,
+        *,
+        base_address: int,
+        with_ascii: bool = False,
+    ) -> None:
+        header = f"  -- {fc} {label} --"
+        if regs is None:
+            lines.append(f"{header} READ FAILED")
+            return
+        lines.append(header)
         for i, raw in enumerate(regs):
             addr = base_address + i
             entry = f"  reg {addr:4d}: 0x{raw:04x} ({raw:5d})"
@@ -280,6 +339,8 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
                 f_lil = self._decode_pair(regs, i, word_order="little")
                 entry += f" | f32_big={f_big:.4g} | f32_lil={f_lil:.4g}"
             lines.append(entry)
+        if with_ascii:
+            lines.append(f"  -- {fc} {label} as ASCII: {self._registers_to_ascii(regs)!r}")
 
     @staticmethod
     def _registers_to_ascii(regs: list[int]) -> str:
@@ -299,11 +360,12 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         # Cheapest read first — failure here means the device isn't talking
         # at all (bad unit ID, Modbus disabled, …) and there's no point
         # spending more round-trips on the rest of the fields.
-        status_code = await self._read_uint16(_REG_STATUS, label="status")
+        status_code = await self._read_input_uint16(_IN_STATUS, label="status")
 
-        # One-shot diagnostic snapshot of the whole connector-1 block on the
+        # One-shot diagnostic snapshot of input + holding spaces on the
         # first successful tick. Lets us identify a shifted register layout
-        # by eyeballing the dump — happens once, not per tick.
+        # OR a function-code mismatch by eyeballing the dump — happens
+        # once, not per tick.
         await self._diagnostic_dump()
 
         # Voltage probe doubles as endianness check. Read the registers once,
@@ -311,7 +373,7 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         # sticky for the session). Critically, we do NOT flip per tick — a
         # stuck-implausible voltage just gets logged once on the dump above
         # and we move on with whatever decode we picked.
-        v_regs = await self._read_registers(_REG_VOLTAGE_L1, 2, label="voltage_l1_v")
+        v_regs = await self._read(_FC_INPUT, _IN_VOLTAGE_L1, 2, label="voltage_l1_v")
         v_big = self._decode_pair(v_regs, 0, word_order="big")
         v_lil = self._decode_pair(v_regs, 0, word_order="little")
         if self._looks_like_voltage(v_big):
@@ -321,13 +383,26 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
             self._word_order = "little"
             voltage_l1_v = v_lil
         else:
-            # Stick with the previously-selected order; consumers see whatever
-            # that decoded to. The diagnostic dump above has the raw bytes for
-            # offline mapping, so no need to flip-flop per tick.
             voltage_l1_v = v_big if self._word_order == "big" else v_lil
 
-        setpoint_a = await self._read_float32(_REG_SETPOINT_A, label="setpoint_a")
-        power_kw = await self._read_float32(_REG_POWER_TOTAL_KW, label="power_kw")
+        # Active applied current (input register 4) — what's actually being
+        # delivered, regardless of source. Holding register 8 is the
+        # write-side setpoint readback (what we last wrote, or what Sonnen
+        # has set). Both are useful: setpoint_a is the live truth for the
+        # dashboard tile, set_current_a tells us what the override layer
+        # has commanded.
+        setpoint_a = await self._read_input_float32(_IN_TARGET_CURRENT_A, label="setpoint_a")
+        set_current_a: float | None
+        try:
+            set_current_a = await self._read_holding_float32(
+                _HOLD_SET_CURRENT_A, label="set_current_a"
+            )
+        except DeviceError:
+            # Holding-register reads can be selectively blocked even when
+            # input reads work; don't kill the tick if they fail.
+            set_current_a = None
+        current_l1_a = await self._read_input_float32(_IN_CURRENT_L1, label="current_l1_a")
+        power_kw = await self._read_input_float32(_IN_POWER_TOTAL_KW, label="power_kw")
         power_w = power_kw * 1000.0
 
         # Cache the installer ceiling on the first successful tick — re-read
@@ -335,12 +410,12 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         # register doesn't permanently mask it.
         if self._custom_max_a is None:
             try:
-                self._custom_max_a = await self._read_uint16(
-                    _REG_CUSTOM_MAX_CURRENT_A, label="custom_max_a"
+                self._custom_max_a = await self._read_input_float32(
+                    _IN_CUSTOM_MAX_CURRENT_A, label="custom_max_a"
                 )
                 logger.info("etrel custom max current cached", custom_max_a=self._custom_max_a)
             except DeviceError:
-                # Already logged by _read_registers; leave cache empty for next tick.
+                # Already logged by _read; leave cache empty for next tick.
                 pass
 
         return DeviceReading(
@@ -349,19 +424,19 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
                 "status_code": float(status_code),
                 "status": _status_label(status_code),
                 "setpoint_a": setpoint_a,
+                "set_current_a": set_current_a,
                 "voltage_l1_v": voltage_l1_v,
+                "current_l1_a": current_l1_a,
                 "power_kw": power_kw,
                 "power_w": power_w,
-                "custom_max_a": (
-                    float(self._custom_max_a) if self._custom_max_a is not None else None
-                ),
+                "custom_max_a": self._custom_max_a,
             },
             quality=1.0,
         )
 
     async def health_check(self) -> bool:
         try:
-            await self._read_uint16(_REG_STATUS, label="health_check")
+            await self._read_input_uint16(_IN_STATUS, label="health_check")
         except DeviceError:
             return False
         return True

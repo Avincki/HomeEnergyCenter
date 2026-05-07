@@ -92,6 +92,18 @@ section h2 {
     padding-left: 2rem;
 }
 
+/* Etrel detail rows (setpoint / max) read as values, not as a rule
+   descriptor — match the .tile-value sizing used by Battery SoC etc.
+   Targets any non-headline child of the right column so it works
+   regardless of whether the markup uses .state-rule or .state-reason. */
+.state-col-right > div:not(.state-headline) {
+    font-size: 1.4rem;
+    font-weight: 600;
+    font-family: inherit;
+    color: var(--text);
+    margin-top: 0.5rem;
+}
+
 .state-headline { font-size: 1.6rem; }
 .state-headline strong {
     color: var(--accent);

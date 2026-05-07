@@ -34,6 +34,7 @@ class SourceName(StrEnum):
     SMALL_SOLAR = "small_solar"
     LARGE_SOLAR = "large_solar"
     SOLAREDGE = "solaredge"
+    ETREL = "etrel"
     PRICES = "prices"
     SOLAR_FORECAST = "solar_forecast"
 
@@ -56,6 +57,9 @@ class Reading(Base):
     p1_active_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)
     small_solar_w: Mapped[float | None] = mapped_column(Float, nullable=True)
     large_solar_w: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Etrel INCH charger active-power total (Modbus reg 26). The HomeWizard
+    # car_charger meter measures Tesla + Etrel; subtracting this yields Tesla.
+    etrel_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)
     injection_price_eur_per_kwh: Mapped[float | None] = mapped_column(Float, nullable=True)
     consumption_price_eur_per_kwh: Mapped[float | None] = mapped_column(Float, nullable=True)
 

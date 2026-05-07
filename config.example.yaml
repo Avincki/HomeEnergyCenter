@@ -29,6 +29,11 @@ solaredge:
   modbus_port: 1502
   unit_id: 1
 
+# etrel:                       # optional Etrel INCH EV charger (Modbus TCP); omit to disable
+#   host: 192.168.1.250
+#   modbus_port: 502
+#   unit_id: 1
+
 prices:
   provider: entsoe       # entsoe | tibber | csv
   api_key: REPLACE_ME    # required for entsoe / tibber

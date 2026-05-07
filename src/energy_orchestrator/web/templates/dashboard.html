@@ -7,14 +7,23 @@
 {% block content %}
 
 <section id="state-card" class="state-card {% if decision and decision.state == 'on' %}state-on{% elif decision and decision.state == 'off' %}state-off{% else %}state-unknown{% endif %}">
-    <div class="state-headline" id="state-headline" {% if not decision %}hidden{% endif %}>
-        SolarEdge: <strong id="state-text">{% if decision %}{{ decision.state | upper }}{% endif %}</strong>
-        <span class="override-flag" id="state-override-flag" {% if not override.active %}hidden{% endif %}>override: <span id="state-override-mode">{{ override.mode }}</span></span>
+    <div class="state-col state-col-left">
+        <div class="state-headline" id="state-headline" {% if not decision %}hidden{% endif %}>
+            SolarEdge: <strong id="state-text">{% if decision %}{{ decision.state | upper }}{% endif %}</strong>
+            <span class="override-flag" id="state-override-flag" {% if not override.active %}hidden{% endif %}>override: <span id="state-override-mode">{{ override.mode }}</span></span>
+        </div>
+        <div class="state-rule" id="state-rule" {% if not decision %}hidden{% endif %}>{% if decision %}{{ decision.rule_fired }}{% endif %}</div>
+        <div class="state-reason" id="state-reason">{% if decision %}{{ decision.reason }}{% else %}The orchestrator tick loop hasn't produced a decision &mdash; populate config.yaml and start the service.{% endif %}</div>
+        <div class="state-when" id="state-when" {% if not decision %}hidden{% endif %}>{% if decision %}decided {{ decision.timestamp | localtime("%Y-%m-%d %H:%M:%S %Z") }}{% endif %}</div>
+        <div class="state-headline" id="state-empty-headline" {% if decision %}hidden{% endif %}>No decision recorded yet</div>
     </div>
-    <div class="state-rule" id="state-rule" {% if not decision %}hidden{% endif %}>{% if decision %}{{ decision.rule_fired }}{% endif %}</div>
-    <div class="state-reason" id="state-reason">{% if decision %}{{ decision.reason }}{% else %}The orchestrator tick loop hasn't produced a decision &mdash; populate config.yaml and start the service.{% endif %}</div>
-    <div class="state-when" id="state-when" {% if not decision %}hidden{% endif %}>{% if decision %}decided {{ decision.timestamp | localtime("%Y-%m-%d %H:%M:%S %Z") }}{% endif %}</div>
-    <div class="state-headline" id="state-empty-headline" {% if decision %}hidden{% endif %}>No decision recorded yet</div>
+    <div class="state-col state-col-right" id="state-etrel">
+        <div class="state-headline">
+            Etrel: <strong id="state-etrel-status">&mdash;</strong>
+        </div>
+        <div class="state-rule">setpoint <span id="state-etrel-setpoint">&mdash;</span> A</div>
+        <div class="state-rule"><strong>max <span id="state-etrel-max">&mdash;</span> A</strong></div>
+    </div>
 </section>
 
 <section class="tiles">
@@ -31,10 +40,25 @@
         <div class="tile-label">House consumption</div>
         <div class="tile-value" id="tile-house">{% if reading and reading.house_consumption_w is not none %}{{ "%.0f" | format(reading.house_consumption_w) }} W{% else %}&mdash;{% endif %}</div>
     </div>
-    <div class="tile">
-        <div class="tile-label">Car charger</div>
-        <div class="tile-value" id="tile-car">{% if reading and reading.car_charger_w is not none %}{{ "%.0f" | format(reading.car_charger_w) }} W{% else %}&mdash;{% endif %}</div>
-    </div>
+    <div class="tile tile-wide">
+        <div class="tile-label">Car chargers</div>
+        <div class="solar-breakdown">
+            <div class="solar-cell">
+                <div class="solar-cell-label">Tesla</div>
+                <div class="solar-cell-value" id="tile-charger-tesla">&mdash;</div>
+            </div>
+            <div class="solar-op">+</div>
+            <div class="solar-cell">
+                <div class="solar-cell-label">Etrel</div>
+                <div class="solar-cell-value" id="tile-charger-etrel">&mdash;</div>
+            </div>
+            <div class="solar-op">=</div>
+            <div class="solar-cell">
+                <div class="solar-cell-label">total</div>
+                <div class="solar-cell-value solar-cell-total" id="tile-charger-total">{% if reading and reading.car_charger_w is not none %}{{ "%.0f" | format(reading.car_charger_w) }} W{% else %}&mdash;{% endif %}</div>
+            </div>
+        </div>
+    </div>1
     <div class="tile tile-wide">
         <div class="tile-label">Solar production</div>
         <div class="solar-breakdown">

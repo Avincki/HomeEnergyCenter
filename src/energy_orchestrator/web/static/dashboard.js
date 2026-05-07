@@ -164,6 +164,61 @@
         setText("tile-solar-total", fmt(total));
     }
 
+    // Charger tile: Tesla + Etrel = total, mirroring the solar tile layout.
+    // Total = HomeWizard car_charger meter (measures both vehicles together).
+    // Etrel power: prefer the persisted reading, fall back to the live source
+    // payload so the cell populates on the very first refresh after enabling
+    // the device, before a Reading row has been written.
+    // Tesla = total - Etrel, clamped at 0 (sub-watt rounding can flip sign).
+    // Below the breakdown we surface the Etrel charger's live status and
+    // current setpoint — needed to know what the charger is actually doing.
+    function applyChargerTile(state, reading) {
+        const etrel = sourcePayload(state, "etrel");
+        const totalW = reading.car_charger_w;
+        const etrelW = reading.etrel_power_w != null
+            ? reading.etrel_power_w
+            : (etrel.power_w != null ? etrel.power_w : null);
+        const teslaW = (totalW != null && etrelW != null)
+            ? Math.max(0, totalW - etrelW)
+            : null;
+
+        setText("tile-charger-tesla", fmtInt(teslaW, " W"));
+        setText("tile-charger-etrel", fmtInt(etrelW, " W"));
+        setText("tile-charger-total", fmtInt(totalW, " W"));
+
+        const status = etrel.status ? String(etrel.status) : null;
+        const setpointPart = etrel.setpoint_a != null
+            ? `setpoint ${etrel.setpoint_a.toFixed(1)} A`
+            : null;
+        const detailParts = [status, setpointPart].filter((p) => p != null);
+        setText(
+            "tile-charger-etrel-detail",
+            detailParts.length > 0 ? `Etrel: ${detailParts.join(" · ")}` : "Etrel: —"
+        );
+    }
+
+    // Top-of-page state card sub-line: live Etrel charger status, the
+    // currently-applied current setpoint (reg 4) and the installer-configured
+    // ceiling (reg 1028). Always visible alongside the SolarEdge state so
+    // the user can see the charger's max-power limit at a glance, with
+    // em-dashes when individual fields haven't been read yet. Hidden only
+    // when Etrel isn't configured at all — i.e. no source row exists.
+    function applyEtrelStateLine(state) {
+        const sources = (state && state.sources) || [];
+        const isConfigured = sources.some((s) => s && s.source_name === "etrel");
+        if (!isConfigured) {
+            setHidden("state-etrel", true);
+            return;
+        }
+        setHidden("state-etrel", false);
+        const etrel = sourcePayload(state, "etrel");
+        setText("state-etrel-status", etrel.status ? String(etrel.status) : "—");
+        setText("state-etrel-setpoint",
+            etrel.setpoint_a != null ? etrel.setpoint_a.toFixed(1) : "—");
+        setText("state-etrel-max",
+            etrel.custom_max_a != null ? Math.round(etrel.custom_max_a) : "—");
+    }
+
     function buildChartData(prices, readings, solarPoints) {
         const now = new Date();
         // Only highlight the "current hour" bar when the chart is showing
@@ -420,6 +475,15 @@
         chart.update("none");
     }
 
+    // Pull the latest payload for one source name out of the /api/state
+    // response. Returns {} when the source hasn't reported yet so callers
+    // can do `.power_w ?? null` without null-checking the wrapper.
+    function sourcePayload(state, name) {
+        const sources = (state && state.sources) || [];
+        const row = sources.find((s) => s && s.source_name === name);
+        return (row && row.last_payload) || {};
+    }
+
     function applyState(state) {
         const reading = state.reading || {};
         const decision = state.decision;
@@ -434,7 +498,8 @@
             ? reading.battery_soc_pct.toFixed(1) + "%" : "—");
         setText("tile-batt-power", fmtInt(neg(reading.battery_power_w), " W"));
         setText("tile-house", fmtInt(reading.house_consumption_w, " W"));
-        setText("tile-car", fmtInt(reading.car_charger_w, " W"));
+        applyChargerTile(state, reading);
+        applyEtrelStateLine(state);
         applySolarTile(reading.small_solar_w, reading.large_solar_w);
         setText("tile-grid", fmtInt(neg(reading.grid_feed_in_w), " W"));
         setText("tile-inj-price", fmtNum(reading.injection_price_eur_per_kwh, 4, " €/kWh"));

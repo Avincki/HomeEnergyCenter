@@ -115,6 +115,18 @@ class SolarEdgeConfig(DeviceConfig):
     unit_id: int = Field(default=1, ge=1, le=247)
 
 
+class EtrelInchConfig(DeviceConfig):
+    """Etrel INCH Home/Pro EV charger over Modbus TCP (port 502 only).
+
+    Cluster/Load-Guard port 503 is intentionally unused — the HomeWizard P1
+    meter is the authoritative grid measurement.
+    """
+
+    port: Port = 502
+    modbus_port: Port = 502
+    unit_id: int = Field(default=1, ge=1, le=247)
+
+
 # ----- prices ------------------------------------------------------------------
 
 
@@ -243,6 +255,10 @@ class AppConfig(_StrictModel):
     sonnen: SonnenBatterieConfig
     homewizard: HomeWizardConfig
     solaredge: SolarEdgeConfig
+    # Optional Etrel INCH EV charger over Modbus TCP. Omit to disable.
+    # The HomeWizard car_charger meter measures Tesla + Etrel together; this
+    # entry lets the orchestrator subtract Etrel power to derive Tesla draw.
+    etrel: EtrelInchConfig | None = None
     prices: PricesConfig
     solar: SolarConfig | None = None
     decision: DecisionConfig = Field(default_factory=DecisionConfig)

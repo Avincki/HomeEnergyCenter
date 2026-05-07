@@ -102,6 +102,20 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                     WebField("Retry count", "solaredge.retry_count"),
                 ),
             ),
+            WebSection(
+                "Etrel INCH EV charger (optional)",
+                (
+                    WebField(
+                        "Host",
+                        "etrel.host",
+                        hint="leave blank to disable — port 502 only (P1 stays grid truth)",
+                    ),
+                    WebField("Modbus port", "etrel.modbus_port"),
+                    WebField("Unit ID", "etrel.unit_id"),
+                    WebField("Timeout (s)", "etrel.timeout_s"),
+                    WebField("Retry count", "etrel.retry_count"),
+                ),
+            ),
         ),
     ),
     (

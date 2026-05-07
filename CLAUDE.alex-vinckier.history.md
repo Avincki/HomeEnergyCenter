@@ -1353,3 +1353,178 @@ regardless of which kWp peak that day actually hit.
   to add or rename a plane without rewriting historic rows. The
   composite `(timestamp, plane)` PK + sum-on-read keeps schema
   stable through config changes.
+
+## 2026-05-07 — Etrel INCH integration + Sonnen Smart-E-Grid lockdown discovery + Solar 429 backoff
+
+Phase: add the Etrel INCH Home/Pro EV charger as a new device source
+similar to SolarEdge, with dashboard tiles for live charger status and
+the installer-configured current cap. Adjacent fix: a real bug surfaced
+during the diagnostic phase where Forecast.Solar 429s caused an infinite
+retry loop hammering the API every poll.
+
+### Scaffolding the Etrel client
+
+Modelled on `SolarEdgeClient`: `EtrelInchConfig` (host, modbus_port=502,
+unit_id=1) wired into `AppConfig` as an *optional* `etrel: ... | None`
+section so the orchestrator runs unchanged for users without an Etrel.
+`@register_device(EtrelInchConfig)` decorator picks up the registry the
+same way the other Modbus client does.
+
+Per-field reads from the start (status reg 0, setpoint reg 4, voltage
+reg 8, power-total reg 26, custom-max reg 1028). The 30-register block
+read I started with would have made failure logs less actionable —
+rejecting one read pinpoints the offending register; a block read leaves
+you guessing. Pymodbus's default `retries=3` is also lethal on a 5 s
+poll budget for a silent device, so we cap at `retries=1`. Every failure
+emits a structured warning with `host / modbus_port / unit_id / address /
+count / field` so the live log viewer is self-diagnosing.
+
+Word-order detection happens once per session, not per tick. Read the
+voltage registers once, decode locally in both endiannesses, pick
+whichever is in the mains envelope (80–300 V) and make it sticky. The
+earlier "flip every tick when implausible" implementation generated 12
+warnings per minute when the device returned bogus values — useless
+noise.
+
+### New `Reading.etrel_power_w` column + alembic 0004
+
+Added one persisted column (`etrel_power_w` only) so historical Tesla =
+`car_charger - etrel` decomposition is possible without bloating the
+table with status/setpoint fields that are inherently latest-only and
+already live in `SourceStatus.last_payload`. Status, setpoint, voltage
+and `custom_max_a` go through the source-status JSON payload to the
+dashboard; only the power flux gets a column.
+
+### Configurator + dashboard wiring
+
+Mirrored the existing optional-section pattern (`large_solar`):
+configurator section in both `web/config_form.py` and `gui/app.py`,
+binding handles blank-host as "disabled". Dashboard got two new pieces:
+
+- **Charger tile rebuilt to match the solar tile.** Three cells
+  (Tesla / Etrel / Total) with `+` and `=` operators between them.
+  Tesla is derived as `max(0, car_total - etrel)` — clamped at 0 so
+  sub-watt rounding doesn't briefly flip negative. Reuses the
+  `.solar-breakdown / .solar-cell / .solar-op / .solar-cell-total`
+  CSS classes verbatim — zero new styling needed for the layout.
+- **State card top tile split into two columns.** SolarEdge state on
+  the left, Etrel status on the right, both using `.state-headline`
+  for identical font sizing. `state-card` becomes a flex container
+  with a thin `border-left` on the right column as a divider, plus
+  a `@media (max-width: 720px)` rule that flips it to a stacked layout
+  with a horizontal divider. The Etrel column reuses `.state-rule`
+  for the setpoint and max lines so they read as a parallel of the
+  SolarEdge rule line.
+
+### Diagnostic odyssey
+
+Goal: get Modbus reads through. Path through the brick wall:
+
+1. **Test-NetConnection 192.168.1.250:502** → success. So TCP works.
+2. Modbus reads time out silently every tick. By spec a server stays
+   silent on either (a) Modbus disabled, (b) wrong unit ID, (c) Modbus
+   listener not actually running.
+3. Asked Opteco; somewhere along the way someone briefly enabled
+   Modbus and we got responses for ~10 minutes — but every register
+   except reg 8 returned 0, and reg 8 decoded to 16.0 (a current value
+   in volts? at "L1 voltage register"?). Weird.
+4. Added a one-shot **diagnostic register dump** that runs on the first
+   successful read after restart: regs 0..47 (live block) + regs
+   990..1039 (info block — serial, model, HW/SW versions, custom max).
+   Both blocks logged with raw uint16 + float32_big + float32_little
+   side-by-side so a layout shift is eyeballable.
+5. **The dump was the smoking gun.** Out of 97 registers, exactly
+   *one* held a non-zero value (reg 8 = 0x4180 = 16.0 BE-float32).
+   The device-info block came back **100% zero** — model/firmware/
+   serial are static manufacturer strings burned in at production,
+   so them returning 0 means the responding side isn't the Etrel
+   itself. Sonnen's Smart-E-Grid is intercepting Modbus reads and
+   only forwarding one register through their facade.
+6. Plugged in the Tesla anyway — connector status reg 0 still read 0
+   ("Available"). The live block doesn't reflect actual device state
+   either. End of story for this firmware: only reg 8 is exposed,
+   probably the Sonnen-imposed current cap (16 A → ~3.7 kW @ 1ph or
+   ~11 kW @ 3ph 230/400 V, typical Belgian residential).
+
+The `red→green→red` source-status flapping during this phase had a
+secondary cause: `SourceStatus` rows persist across restarts. After a
+clean shutdown, the most recent error from the previous run is
+displayed until the new run's first successful tick lands. Briefly
+considered auto-clearing on startup but decided against — the existing
+"Clear errors" button on `/debug` is enough for the rare case.
+
+### Pymodbus log-spam silenced
+
+`pymodbus.logging` emits the raw send/recv hex frames at ERROR with
+`get_last_frames()` appended into the same record on every retry.
+With Modbus down for 12 ticks/minute that floods the live log viewer
+with content the operator can't act on — our device clients log their
+own structured warnings with the actionable context. Bumped the
+internal `pymodbus.logging` logger to `CRITICAL` (suppresses the
+hex-blob ERROR), left the rest of `pymodbus` at `WARNING` so genuine
+library-level problems still surface.
+
+### Solar 429 backoff (separate bug, found during this session)
+
+Symptom: every tick logged
+`Forecast.Solar HTTP 429 Rate limit for API calls reached`. Root cause:
+in-memory `SolarCache` starts empty after each restart → `is_stale()`
+returns True → fetch fires → 429 → cache stays empty → next tick
+re-fetches. With ~30 restarts during the Etrel debugging session we
+burned the daily quota and got stuck in the loop.
+
+Fix: `SolarCache.mark_failed(now)` writes a `_next_attempt_at` 60
+minutes ahead (matching Forecast.Solar's hourly quota reset).
+`is_stale()` honours the cooldown first. On success, `replace()` sets
+the cooldown to `_MAX_AGE` (30 min) as before — success overrides
+failure backoff. Existing forecast remains visible during cooldown so
+the dashboard doesn't blank out from a transient API blip. Wired
+`mark_failed` into both `SolarError` and the catch-all `Exception`
+branches in `_refresh_solar_if_stale` so pre-startup cache wipes never
+hit Forecast.Solar more than once per hour. 5 unit tests for the
+backoff state machine.
+
+### Reusable nuggets
+
+- **One-shot register dump on first connect.** When integrating any
+  Modbus device whose documented register layout might not match the
+  firmware actually running, log a full sweep of the live block AND
+  the info block (manufacturer strings, version registers) on the
+  first successful tick. The info block is the Rosetta Stone — if it
+  returns garbage or zeros, you're not talking to the device you
+  think you are. ~30 lines of code, paid for itself in literally one
+  diagnostic round.
+- **Per-field reads beat block reads for diagnostics.** A single
+  block-read failure tells you "the device didn't respond to a read of
+  N registers". A per-field-read failure tells you "the device didn't
+  respond when asked for `voltage_l1_v` at `addr=8 count=2`". Same
+  Modbus traffic on success, vastly more actionable on failure.
+- **Cap pymodbus retries at 1 for ticked polling.** Default 3 means
+  every silent timeout costs 3× the configured `timeout`. On a 5 s
+  poll that's ~15 s blocking the gather, which silently degrades the
+  dashboard freshness for *every* device, not just the failing one.
+- **TCP-accepts-but-app-silent ≠ device unreachable.** The Etrel was
+  reachable on every probed port (80, 443, 502) yet none of them
+  served any application data — Sonnen's network setup pinholes ports
+  but the embedded server behind them speaks selectively. When the
+  layer-4 test passes, you still need a layer-7 test (HTTP fetch,
+  Modbus read) to know if anything's actually behind it.
+- **Failure backoff in caches.** Any cache that gates a rate-limited
+  API call needs `mark_failed`-style cooldown, not just
+  `replace()`-on-success. Otherwise `is_stale()` comes back True on
+  every poll after a failure and you hammer the API harder than
+  any legitimate cadence would. Cooldown duration should match the
+  upstream's quota window (Forecast.Solar resets hourly → 60 min).
+- **Show em-dash, not zero, for unavailable values.** Rendering "0 W"
+  / "0 A" on the dashboard when the underlying read returned a
+  default zero is actively misleading — looks like a real reading.
+  Only relevant on devices like this where zero is genuinely "no
+  data" rather than a real measurement (zero charging current is a
+  meaningful state on a working charger). Trade-off noted, not
+  implemented this session — gated on Opteco unblocking the
+  registers first.
+- **Persisted `SourceStatus` flaps across restarts.** Stale errors
+  from the previous run are displayed until the new run's first
+  successful tick lands. Mention this once when teaching the system
+  to a user; don't auto-clear on startup (it would mask "the device
+  has been down since yesterday" — a real signal).

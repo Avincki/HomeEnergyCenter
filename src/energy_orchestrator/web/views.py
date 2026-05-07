@@ -302,6 +302,15 @@ def _config_view(config: AppConfig) -> dict[str, Any]:
             "modbus_port": config.solaredge.modbus_port,
             "unit_id": config.solaredge.unit_id,
         },
+        "etrel": (
+            None
+            if config.etrel is None
+            else {
+                "host": config.etrel.host,
+                "modbus_port": config.etrel.modbus_port,
+                "unit_id": config.etrel.unit_id,
+            }
+        ),
         "prices": {
             "provider": config.prices.provider.value,
             "area": config.prices.area,

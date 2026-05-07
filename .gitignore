@@ -51,6 +51,8 @@ Thumbs.db
 *.sqlite3
 config.yaml
 config.local.yaml
+*.bak
+keys.txt
 .env
 .env.*
 !.env.example

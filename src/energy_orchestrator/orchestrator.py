@@ -113,6 +113,12 @@ class TickLoop:
             if config.homewizard.large_solar is not None
             else None
         )
+        # Optional Etrel INCH EV charger over Modbus TCP. The HomeWizard
+        # car-charger meter measures Tesla + Etrel together; reading Etrel
+        # power here lets the dashboard split per-vehicle draw.
+        self._etrel: DeviceClient[Any] | None = (
+            create_device_client(config.etrel) if config.etrel is not None else None
+        )
         solaredge = create_device_client(config.solaredge)
         if not isinstance(solaredge, SolarEdgeClient):
             raise TypeError(
@@ -159,6 +165,8 @@ class TickLoop:
         ]
         if self._large_solar is not None:
             clients.append(self._large_solar)
+        if self._etrel is not None:
+            clients.append(self._etrel)
         for client in clients:
             with contextlib.suppress(Exception):
                 await client.close()
@@ -194,13 +202,14 @@ class TickLoop:
         # Bind tick_at so every log line emitted during this tick (including
         # nested helpers) carries the same timestamp.
         with structlog.contextvars.bound_contextvars(tick_at=when.isoformat()):
-            sonnen_r, car_r, p1_r, small_r, _solar_r, large_r = await asyncio.gather(
+            sonnen_r, car_r, p1_r, small_r, _solar_r, large_r, etrel_r = await asyncio.gather(
                 self._read_one(self._sonnen),
                 self._read_one(self._car_charger),
                 self._read_one(self._p1_meter),
                 self._read_one(self._small_solar),
                 self._read_one(self._solaredge),
                 self._read_optional(self._large_solar),
+                self._read_optional(self._etrel),
             )
 
             await self._refresh_prices_if_stale(when)
@@ -208,7 +217,7 @@ class TickLoop:
             current_price = get_current_hour_price(self._price_cache.points(), when)
 
             reading = self._build_reading(
-                when, sonnen_r, car_r, p1_r, small_r, large_r, current_price
+                when, sonnen_r, car_r, p1_r, small_r, large_r, etrel_r, current_price
             )
             decision: Decision | None = None
 
@@ -321,9 +330,14 @@ class TickLoop:
         try:
             forecast = await self._solar_provider.fetch_forecast()
         except SolarError as e:
+            # Cooldown the cache so we don't retry every poll — Forecast.Solar
+            # rate-limits per IP and a failed fetch (esp. 429) means the
+            # bucket is empty until the hourly reset.
+            self._solar_cache.mark_failed(now)
             await self._record_status_error(SourceName.SOLAR_FORECAST, str(e))
             return
         except Exception as e:  # defensive
+            self._solar_cache.mark_failed(now)
             logger.exception("unexpected error fetching solar forecast")
             await self._record_status_error(SourceName.SOLAR_FORECAST, f"unexpected: {e}")
             return
@@ -433,6 +447,7 @@ class TickLoop:
         p1: DeviceReading | None,
         small: DeviceReading | None,
         large: DeviceReading | None,
+        etrel: DeviceReading | None,
         price: PricePoint | None,
     ) -> Reading:
         sonnen_data = sonnen.data if sonnen is not None else {}
@@ -450,6 +465,9 @@ class TickLoop:
             ),
             large_solar_w=(
                 _as_float(large.data.get("active_power_w")) if large is not None else None
+            ),
+            etrel_power_w=(
+                _as_float(etrel.data.get("power_w")) if etrel is not None else None
             ),
             injection_price_eur_per_kwh=(
                 price.injection_eur_per_kwh if price is not None else None

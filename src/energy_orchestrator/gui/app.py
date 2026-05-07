@@ -21,6 +21,7 @@ from energy_orchestrator.config.models import (
     AppConfig,
     CarChargerConfig,
     DeviceConfig,
+    EtrelInchConfig,
     LargeSolarConfig,
     P1MeterConfig,
     SmallSolarConfig,
@@ -93,6 +94,13 @@ _SOLAREDGE_FIELDS: tuple[FieldSpec, ...] = (
     FieldSpec("Unit ID", "solaredge.unit_id"),
     FieldSpec("Timeout (s)", "solaredge.timeout_s"),
     FieldSpec("Retry count", "solaredge.retry_count"),
+)
+_ETREL_FIELDS: tuple[FieldSpec, ...] = (
+    FieldSpec("Host", "etrel.host", hint="leave blank to disable"),
+    FieldSpec("Modbus port", "etrel.modbus_port"),
+    FieldSpec("Unit ID", "etrel.unit_id"),
+    FieldSpec("Timeout (s)", "etrel.timeout_s"),
+    FieldSpec("Retry count", "etrel.retry_count"),
 )
 
 # Decision tab: thresholds + pricing + safety.
@@ -206,6 +214,9 @@ class ConfigEditorApp:
             large_solar_probe_factory,
         )
         self._add_device_section(tab, "SolarEdge", _SOLAREDGE_FIELDS, solaredge_probe_factory)
+        self._add_device_section(
+            tab, "Etrel INCH (optional)", _ETREL_FIELDS, etrel_probe_factory
+        )
         return tab
 
     def _build_decision_tab(self, parent: ttk.Notebook) -> ttk.Frame:
@@ -505,6 +516,21 @@ def solaredge_probe_factory(form: AppConfigForm) -> DeviceConfig | str:
             "unit_id": form.get("solaredge.unit_id", "1"),
             "timeout_s": form.get("solaredge.timeout_s", "5"),
             "retry_count": form.get("solaredge.retry_count", "3"),
+        },
+    )
+
+
+def etrel_probe_factory(form: AppConfigForm) -> DeviceConfig | str:
+    if not form.get("etrel.host", "").strip():
+        return "host is empty — Etrel charger is disabled"
+    return _try_build(
+        EtrelInchConfig,
+        {
+            "host": form.get("etrel.host", ""),
+            "modbus_port": form.get("etrel.modbus_port", "502"),
+            "unit_id": form.get("etrel.unit_id", "1"),
+            "timeout_s": form.get("etrel.timeout_s", "5"),
+            "retry_count": form.get("etrel.retry_count", "3"),
         },
     )
 

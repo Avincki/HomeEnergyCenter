@@ -115,6 +115,7 @@ def _reading_to_dict(r: Reading | None) -> dict[str, Any] | None:
         "p1_active_power_w": r.p1_active_power_w,
         "small_solar_w": r.small_solar_w,
         "large_solar_w": r.large_solar_w,
+        "etrel_power_w": r.etrel_power_w,
         "injection_price_eur_per_kwh": r.injection_price_eur_per_kwh,
         "consumption_price_eur_per_kwh": r.consumption_price_eur_per_kwh,
     }

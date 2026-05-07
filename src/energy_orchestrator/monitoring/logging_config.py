@@ -100,5 +100,15 @@ def configure_logging(config: LoggingConfig) -> None:
     root.addHandler(console_handler)
     root.setLevel(config.level)
 
+    # Pymodbus's internal helper logs the "No response" message at ERROR
+    # with the previous send/recv frame dumps appended into the same record.
+    # When a charger is unreachable that fires every tick — unreadable in
+    # the live log viewer, and our device clients already emit structured
+    # warnings with the actionable context. Silence the helper at CRITICAL;
+    # leave the rest of pymodbus at WARNING so genuine library-level
+    # problems still surface.
+    logging.getLogger("pymodbus").setLevel(logging.WARNING)
+    logging.getLogger("pymodbus.logging").setLevel(logging.CRITICAL)
+
 
 __all__ = ["configure_logging"]

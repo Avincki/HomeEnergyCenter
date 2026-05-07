@@ -77,6 +77,18 @@ def config_to_form(config: AppConfig) -> AppConfigForm:
     hw = nested.get("homewizard")
     if isinstance(hw, dict) and hw.get("large_solar") is None:
         hw.pop("large_solar", None)
+    # Optional top-level ``etrel`` section: when None, populate the form with
+    # blank fields rather than dropping it entirely so the user can fill in
+    # an address to enable the device. Without this, the section would never
+    # render any inputs the first time a config without ``etrel`` is loaded.
+    if nested.get("etrel") is None:
+        nested["etrel"] = {
+            "host": "",
+            "modbus_port": "502",
+            "unit_id": "1",
+            "timeout_s": "5.0",
+            "retry_count": "3",
+        }
     flat: AppConfigForm = {}
     _flatten(nested, prefix=(), out=flat)
     # model_dump leaves SecretStr as objects — unwrap.
@@ -121,6 +133,15 @@ def form_to_config(
             hw["large_solar"] = None
         elif not str(ls.get("host", "")).strip():
             hw["large_solar"] = None
+
+    # Same treatment for the optional top-level ``etrel`` section: blank host
+    # means "disabled". Set to None so AppConfig.etrel falls back to its
+    # default rather than failing host validation on the empty string.
+    et = nested.get("etrel")
+    if not isinstance(et, dict):
+        nested["etrel"] = None
+    elif not str(et.get("host", "")).strip():
+        nested["etrel"] = None
 
     if baseline is not None and baseline.solar is not None and "solar" not in nested:
         # Preserve the YAML-only solar section through web-form saves.
@@ -288,6 +309,18 @@ def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
             "modbus_port": config.solaredge.modbus_port,
             "unit_id": config.solaredge.unit_id,
         },
+        "etrel": (
+            None
+            if config.etrel is None
+            else {
+                "host": config.etrel.host,
+                "port": config.etrel.port,
+                "timeout_s": config.etrel.timeout_s,
+                "retry_count": config.etrel.retry_count,
+                "modbus_port": config.etrel.modbus_port,
+                "unit_id": config.etrel.unit_id,
+            }
+        ),
         "prices": {
             "provider": config.prices.provider.value,
             "api_key": _secret_or_none(config.prices.api_key),

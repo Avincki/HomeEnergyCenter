@@ -7,6 +7,7 @@ from energy_orchestrator.devices.errors import (
     DeviceTimeoutError,
     UnknownDeviceTypeError,
 )
+from energy_orchestrator.devices.etrel import EtrelInchClient
 from energy_orchestrator.devices.homewizard import (
     CarChargerClient,
     HomeWizardClient,
@@ -30,6 +31,7 @@ __all__ = [
     "DeviceProtocolError",
     "DeviceReading",
     "DeviceTimeoutError",
+    "EtrelInchClient",
     "HomeWizardClient",
     "P1MeterClient",
     "SmallSolarClient",

@@ -33,10 +33,13 @@ from energy_orchestrator.data.models import (
     SourceName,
     SourceStatus,
 )
+from energy_orchestrator.devices.errors import DeviceError
+from energy_orchestrator.devices.etrel import EtrelInchClient
 from energy_orchestrator.prices import PriceCache
 from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.web.dependencies import (
     get_config,
+    get_etrel_client,
     get_override_controller,
     get_price_cache,
     get_solar_cache,
@@ -49,6 +52,7 @@ UowDep = Annotated[UnitOfWork, Depends(get_uow)]
 OverrideDep = Annotated[OverrideController, Depends(get_override_controller)]
 PriceCacheDep = Annotated[PriceCache, Depends(get_price_cache)]
 SolarCacheDep = Annotated[SolarCache, Depends(get_solar_cache)]
+EtrelClientDep = Annotated[EtrelInchClient | None, Depends(get_etrel_client)]
 
 router = APIRouter(prefix="/api")
 
@@ -80,6 +84,13 @@ def _local_day_window(date_str: str) -> tuple[datetime, datetime]:
 class OverrideRequest(BaseModel):
     mode: OverrideMode
     minutes: int | None = Field(default=None, ge=1, le=1440)
+
+
+class EtrelSetCurrentRequest(BaseModel):
+    # Safety hard cap — 16 A is the wired-in ceiling for this installation.
+    # Higher values are rejected at the API layer regardless of what the
+    # charger's installer setting (custom_max_a) reports.
+    amps: float = Field(..., ge=0.0, le=16.0)
 
 
 # ----- serializers -------------------------------------------------------------
@@ -539,3 +550,79 @@ async def post_override(body: OverrideRequest, controller: OverrideDep) -> dict[
         )
     controller.set(mode=body.mode, minutes=body.minutes)
     return _override_to_dict(controller)
+
+
+@router.post("/etrel/diagnostic-dump")
+async def post_etrel_diagnostic_dump(
+    config: ConfigDep, etrel_client: EtrelClientDep
+) -> dict[str, Any]:
+    """Re-run the Etrel register dump now (input+holding, regs 0..47 + 990..1039).
+
+    Diagnostic for Sonnen Smart-E-Grid behavior: trigger this while the
+    setpoint is clamped (``setpoint_diverged=true`` in the change-event
+    log) and grep the resulting log entry for the float32 column matching
+    the observed ``setpoint_a``. The matching register is where Sonnen's
+    cluster channel writes its limit.
+    """
+    if config.etrel is None:
+        raise HTTPException(status_code=400, detail="Etrel charger is not configured")
+    if etrel_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Etrel client unavailable (tick loop not running)",
+        )
+    await etrel_client.force_diagnostic_dump()
+    return {"status": "ok", "message": "diagnostic dump triggered, see log"}
+
+
+@router.post("/etrel/set-current")
+async def post_etrel_set_current(
+    body: EtrelSetCurrentRequest,
+    config: ConfigDep,
+    etrel_client: EtrelClientDep,
+) -> dict[str, Any]:
+    """Manual write to the Etrel set-current setpoint (holding reg 8..9).
+
+    Diagnostic endpoint — verifies that we can actually steer the charger
+    rather than just observe it. Sonnen's Smart-E-Grid backend may overwrite
+    the setpoint within seconds; this endpoint is for the "did our write
+    take effect" test, not as a control loop.
+
+    Routes through the **tick loop's** Etrel client, not a fresh instance —
+    the firmware on this unit drops PDUs on a second concurrent Modbus TCP
+    connection even when its handshake passes. The client's internal lock
+    serializes the read tick against this write so they don't interleave.
+
+    Always attempts a post-write readback of the same register, even when
+    the write itself raised — Etrel firmware variants have been observed
+    to apply a write while dropping the ACK, so the readback is the only
+    reliable signal of whether the write took effect. Returns 200 with a
+    structured body in all cases (write may have succeeded, failed, or
+    succeeded silently); the caller inspects ``write_succeeded`` and
+    ``set_current_a_after`` to decide.
+    """
+    if config.etrel is None:
+        raise HTTPException(status_code=400, detail="Etrel charger is not configured")
+    if etrel_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Etrel client unavailable (tick loop not running)",
+        )
+    write_error: str | None = None
+    set_current_a_after: float | None = None
+    readback_error: str | None = None
+    try:
+        await etrel_client.set_charging_current_a(body.amps)
+    except DeviceError as e:
+        write_error = str(e)
+    try:
+        set_current_a_after = await etrel_client.read_set_current_a()
+    except DeviceError as e:
+        readback_error = str(e)
+    return {
+        "amps_requested": body.amps,
+        "write_succeeded": write_error is None,
+        "write_error": write_error,
+        "set_current_a_after": set_current_a_after,
+        "readback_error": readback_error,
+    }

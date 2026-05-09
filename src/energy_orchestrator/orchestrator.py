@@ -49,6 +49,7 @@ from energy_orchestrator.devices import (
     SolarEdgeClient,
     create_device_client,
 )
+from energy_orchestrator.devices.etrel import EtrelInchClient
 from energy_orchestrator.prices import (
     PriceCache,
     PriceError,
@@ -141,6 +142,22 @@ class TickLoop:
 
     # ----- lifecycle ----------------------------------------------------------
 
+    @property
+    def etrel_client(self) -> EtrelInchClient | None:
+        """Public accessor for the Etrel client owned by this loop.
+
+        Routing API writes through the same client (rather than spawning a
+        fresh one) avoids opening a second Modbus TCP connection to the
+        charger; that firmware silently drops PDUs on the second connection
+        even when the TCP handshake passes. The client's internal lock
+        serializes the read tick against ad-hoc writes.
+        """
+        if self._etrel is None:
+            return None
+        if not isinstance(self._etrel, EtrelInchClient):
+            return None
+        return self._etrel
+
     async def start(self) -> None:
         if self._task is not None:
             raise RuntimeError("TickLoop already started")
@@ -202,7 +219,7 @@ class TickLoop:
         # Bind tick_at so every log line emitted during this tick (including
         # nested helpers) carries the same timestamp.
         with structlog.contextvars.bound_contextvars(tick_at=when.isoformat()):
-            sonnen_r, car_r, p1_r, small_r, _solar_r, large_r, etrel_r = await asyncio.gather(
+            sonnen_r, car_r, p1_r, small_r, solar_r, large_r, etrel_r = await asyncio.gather(
                 self._read_one(self._sonnen),
                 self._read_one(self._car_charger),
                 self._read_one(self._p1_meter),
@@ -265,7 +282,9 @@ class TickLoop:
                             manual_override=record.manual_override,
                         )
 
-                    if not self.config.decision.dry_run and record.state_changed:
+                    if not self.config.decision.dry_run and self._needs_actuation(
+                        record.state, solar_r
+                    ):
                         await self._actuate_solaredge(record.state)
 
             await self._persist(reading, decision)
@@ -386,6 +405,30 @@ class TickLoop:
                 await uow.commit()
         except Exception:  # never let history bookkeeping kill the tick
             logger.exception("solar-forecast persistence failed")
+
+    def _needs_actuation(
+        self, desired: DecisionState, solar_reading: DeviceReading | None
+    ) -> bool:
+        """True if the inverter's actual active-power-limit register differs
+        from the value implied by ``desired``.
+
+        Driving actuation off the live read instead of ``record.state_changed``
+        makes the loop self-healing against drift between the persisted decision
+        history and the hardware. The override→auto transition is the canonical
+        case: while a force-off is active, every persisted decision row is OFF,
+        so when the override clears, comparing the new decision against the
+        last persisted state can yield ``state_changed=False`` even though the
+        inverter is still pinned at 0 %. Reading the register directly closes
+        that loop. When the read failed this tick, fall back to actuating
+        unconditionally — better an extra write than a missed one.
+        """
+        target = _ON_PCT if desired is DecisionState.ON else _OFF_PCT
+        if solar_reading is None:
+            return True
+        actual = solar_reading.data.get("active_power_limit_pct")
+        if actual is None:
+            return True
+        return int(actual) != target
 
     async def _actuate_solaredge(self, state: DecisionState) -> None:
         target = _ON_PCT if state is DecisionState.ON else _OFF_PCT

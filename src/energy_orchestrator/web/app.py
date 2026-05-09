@@ -67,6 +67,10 @@ async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
         )
         await tick_loop.start()
     app.state.tick_loop = tick_loop
+    # Expose the Etrel client so API write endpoints can share the tick
+    # loop's connection. ``None`` when Etrel isn't configured or the tick
+    # loop is disabled (tests).
+    app.state.etrel_client = tick_loop.etrel_client if tick_loop is not None else None
 
     try:
         yield

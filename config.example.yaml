@@ -1,7 +1,7 @@
 # Energy Orchestrator — example configuration.
 # Copy to config.yaml and edit. config.yaml is gitignored.
 
-poll_interval_s: 30          # device-poll cadence (Reading row written each tick)
+poll_interval_s: 5           # device-poll cadence (Reading row written each tick)
 decision_interval_s: 60      # decision/actuation cadence — typically >= poll_interval_s
 
 sonnen:

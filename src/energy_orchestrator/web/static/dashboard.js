@@ -9,10 +9,11 @@
 (() => {
     "use strict";
 
-    const COLOR_ACCENT = "#38bdf8";
-    const COLOR_MUTED = "rgba(148, 163, 184, 0.55)";
-    const COLOR_NEG = "rgba(239, 68, 68, 0.75)";
-    const COLOR_CURRENT = "rgba(56, 189, 248, 0.85)";
+    // Price bars: muted grey when injection price is positive, light green
+    // when negative. Bar heights are plotted as |price| so negative hours
+    // still rise from zero — the sign is conveyed by colour, not direction.
+    const COLOR_PRICE_POS = "rgba(148, 163, 184, 0.55)";
+    const COLOR_PRICE_NEG = "rgba(134, 239, 172, 0.75)";
     // SoC: brighter green-400 instead of green-500 — pops against the muted
     // gray price bars and the translucent orange solar fill.
     const COLOR_SOC = "#4ade80";
@@ -31,9 +32,9 @@
 
     const REFRESH_MS = 5000;
     // Largest x-axis gap (in ms) the SoC and total-solar lines will bridge.
-    // Beyond this the line breaks — the orchestrator polls every 30 s, so
-    // ~3× that catches genuine offline windows without flickering on a
-    // single skipped sample.
+    // Beyond this the line breaks — the orchestrator polls every 5 s, so
+    // 90 s catches genuine offline windows (≥ 18 missed samples) without
+    // flickering on a single skipped read.
     const MAX_LINE_GAP_MS = 90 * 1000;
 
     let chart = null;
@@ -220,24 +221,16 @@
     }
 
     function buildChartData(prices, readings, solarPoints) {
-        const now = new Date();
-        // Only highlight the "current hour" bar when the chart is showing
-        // today — on a historic or future day there's no live current hour.
-        const showCurrentHour = isViewingToday();
-
+        // Bars plot |price| so negative hours rise from zero like positive
+        // ones; sign is conveyed by colour (red = positive, green = negative).
+        // _raw carries the signed value through to the tooltip.
         const priceBars = prices.map(p => ({
             x: new Date(p.timestamp).valueOf(),
-            y: p.injection_eur_per_kwh,
+            y: Math.abs(p.injection_eur_per_kwh),
+            _raw: p.injection_eur_per_kwh,
         }));
-        const priceColors = prices.map(p => {
-            if (p.injection_eur_per_kwh < 0) return COLOR_NEG;
-            if (showCurrentHour && currentHourMatches(p.timestamp, now)) return COLOR_CURRENT;
-            return COLOR_MUTED;
-        });
-        const priceBorders = prices.map(p =>
-            (showCurrentHour && currentHourMatches(p.timestamp, now))
-                ? COLOR_ACCENT
-                : "transparent"
+        const priceColors = prices.map(p =>
+            p.injection_eur_per_kwh < 0 ? COLOR_PRICE_NEG : COLOR_PRICE_POS
         );
 
         // Keep readings without a SoC sample but emit a null y so the line
@@ -270,7 +263,7 @@
             };
         });
 
-        return { priceBars, priceColors, priceBorders, socLine, solarLine, totalSolarLine };
+        return { priceBars, priceColors, socLine, solarLine, totalSolarLine };
     }
 
     function renderCombined(canvas, prices, readings, solarPoints) {
@@ -280,7 +273,7 @@
         endOfDay.setDate(endOfDay.getDate() + 1);
         const dayLabel = fmtDateYMD(startOfDay);
 
-        const { priceBars, priceColors, priceBorders, socLine, solarLine, totalSolarLine } =
+        const { priceBars, priceColors, socLine, solarLine, totalSolarLine } =
             buildChartData(prices, readings, solarPoints);
 
         return new Chart(canvas, {
@@ -291,8 +284,11 @@
                         label: "Injection €/kWh",
                         data: priceBars,
                         backgroundColor: priceColors,
-                        borderColor: priceBorders,
-                        borderWidth: 2,
+                        // Transparent border eats 2 px from each side of the
+                        // bar — keeps the slim look we had before the colour
+                        // refactor without re-adding a visible outline.
+                        borderColor: "transparent",
+                        borderWidth: 3,
                         yAxisID: "yPrice",
                         // 1 hour wide — matches the price-point hour resolution.
                         barThickness: "flex",
@@ -392,7 +388,9 @@
                             },
                             label: (ctx) => {
                                 if (ctx.dataset.yAxisID === "yPrice") {
-                                    return `Injection ${ctx.parsed.y.toFixed(4)} €/kWh`;
+                                    const signed = (ctx.raw && ctx.raw._raw != null)
+                                        ? ctx.raw._raw : ctx.parsed.y;
+                                    return `Injection ${signed.toFixed(4)} €/kWh`;
                                 }
                                 if (ctx.dataset.yAxisID === "ySolar") {
                                     const name = ctx.dataset.label.replace(/ \(kW\)$/, "");
@@ -447,7 +445,7 @@
 
     function updateChart(prices, readings, solarPoints) {
         if (!chart) return;
-        const { priceBars, priceColors, priceBorders, socLine, solarLine, totalSolarLine } =
+        const { priceBars, priceColors, socLine, solarLine, totalSolarLine } =
             buildChartData(prices, readings, solarPoints);
         // Datasets:
         //   0 = price bars
@@ -458,7 +456,6 @@
         //   5 = SoC line
         chart.data.datasets[0].data = priceBars;
         chart.data.datasets[0].backgroundColor = priceColors;
-        chart.data.datasets[0].borderColor = priceBorders;
         chart.data.datasets[1].data = solarLine;
         chart.data.datasets[2].data = totalSolarLine;
         chart.data.datasets[3].data = totalSolarLine;
@@ -764,12 +761,98 @@
         applyNavUi();
     }
 
+    function wireEtrelSetCurrent() {
+        const btn = document.getElementById("etrel-set-current-btn");
+        const input = document.getElementById("etrel-set-current-input");
+        const status = document.getElementById("etrel-set-current-status");
+        if (!btn || !input) return;
+        btn.addEventListener("click", async () => {
+            const amps = Number(input.value);
+            // Safety hard cap at 16 A — the API also enforces this; the
+            // client-side check is just for a friendlier error.
+            if (!Number.isFinite(amps) || amps < 0 || amps > 16) {
+                if (status) status.textContent = "0–16 A only";
+                return;
+            }
+            btn.disabled = true;
+            if (status) status.textContent = "Sending…";
+            try {
+                const resp = await fetch("/api/etrel/set-current", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ amps }),
+                });
+                if (!resp.ok) {
+                    const detail = await resp.text();
+                    throw new Error(`HTTP ${resp.status}: ${detail}`);
+                }
+                const data = await resp.json();
+                if (status) status.textContent = formatSetCurrentResult(data);
+            } catch (e) {
+                if (status) status.textContent = `Failed: ${e.message}`;
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    }
+
+    // Render the structured /api/etrel/set-current response as a one-liner.
+    // Three cases the user actually cares about:
+    //   1. Write ACKed and readback agrees → "Sent N A (readback M A)".
+    //   2. Write ACK was lost but readback shows our value → "ACK timed out
+    //      but readback N A — write took silently". This is the case Etrel
+    //      firmware exhibits when the Sonnen cluster channel is active.
+    //   3. Write failed and readback disagrees → "Write failed; readback M A".
+    // Tolerance below matches the device's float-precision noise floor; the
+    // API enforces a hard 16 A cap and rounds to whole amps in practice.
+    function formatSetCurrentResult(data) {
+        const requested = data.amps_requested;
+        const after = data.set_current_a_after;
+        const readbackTxt = data.readback_error
+            ? `readback failed: ${data.readback_error}`
+            : (after != null ? `readback ${after.toFixed(2)} A` : "readback —");
+        if (data.write_succeeded) {
+            return `Sent ${requested} A · ${readbackTxt}`;
+        }
+        const tookSilently = (
+            after != null && Math.abs(after - requested) < 0.1
+        );
+        if (tookSilently) {
+            return `ACK lost but ${readbackTxt} — write took silently`;
+        }
+        return `Write failed: ${data.write_error || "unknown"} · ${readbackTxt}`;
+    }
+
+    function wireEtrelDump() {
+        const btn = document.getElementById("etrel-dump-btn");
+        const status = document.getElementById("etrel-set-current-status");
+        if (!btn) return;
+        btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            if (status) status.textContent = "Dumping…";
+            try {
+                const resp = await fetch("/api/etrel/diagnostic-dump", { method: "POST" });
+                if (!resp.ok) {
+                    const detail = await resp.text();
+                    throw new Error(`HTTP ${resp.status}: ${detail}`);
+                }
+                if (status) status.textContent = "Dumped — see log";
+            } catch (e) {
+                if (status) status.textContent = `Dump failed: ${e.message}`;
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    }
+
     async function init() {
         installDateAdapter();
         const canvas = document.getElementById("mainChart");
         if (!canvas) return;
 
         wireChartNav();
+        wireEtrelSetCurrent();
+        wireEtrelDump();
 
         const urls = buildChartUrls();
         let prices = [];

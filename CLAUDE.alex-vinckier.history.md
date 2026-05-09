@@ -1528,3 +1528,110 @@ backoff state machine.
   successful tick lands. Mention this once when teaching the system
   to a user; don't auto-clear on startup (it would mask "the device
   has been down since yesterday" — a real signal).
+
+## 2026-05-09 — Price-bar |value| rendering + override→auto actuation fix
+
+Two unrelated tasks bundled in one session: a chart visual refactor for
+the day-ahead injection price bars, and a real bug where the SolarEdge
+inverter wasn't being driven back to the rule-defined state when the
+manual override was cleared.
+
+### Day-ahead price bars: |value| with sign-encoded colour
+
+Old layout plotted signed prices, so negative-price hours hung downward
+below the x-axis — visually busy and made the SoC/solar lines harder to
+follow because the y-axis spanned both signs. New layout plots
+`Math.abs(injection)` so every hour rises from zero; sign is conveyed
+by colour: muted grey for positive, light green (`rgba(134, 239, 172,
+0.75)`) for negative. The cyan "current hour" highlight (`COLOR_ACCENT`
+border + `COLOR_CURRENT` fill) was removed at the same time — it was
+visually competing with the SoC line and the user found it noisy.
+
+Tooltip still shows the signed value, not the absolute. The data points
+carry an extra `_raw` field with the original signed price; the tooltip
+reaches into `ctx.raw._raw` so a green bar at 0.05 reads back as
+`Injection -0.0500 €/kWh`.
+
+Subtle Chart.js gotcha: when I removed the per-bar `borderColor` /
+`borderWidth: 2` to "clean up" the dataset config, the bars visually
+widened by ~4 px because the transparent border was eating gutter on
+both sides. Restored `borderWidth: 2` with a dataset-level
+`borderColor: "transparent"` to get the slim look back without drawing
+a visible outline. A border that's just there for spacing is a
+non-obvious idiom — worth a comment.
+
+Iterated on the positive-price colour: tried red-300 (too pink), then
+red-400 (too red against the SoC line), then back to the original
+muted grey. Lesson: don't pick palette colours in isolation — the
+chart already has green (SoC), yellow (total solar), orange (forecast
+solar) competing for attention; adding another saturated colour for
+the dominant category ate the visual hierarchy. Grey-for-default,
+green-for-the-interesting-case is the right framing.
+
+### Bug: SolarEdge stuck at 0 % after force-off → auto
+
+Symptom reported by user: force-off worked (inverter went to 0 %), but
+flipping back to auto did not bring it back even though the rule should
+have decided ON. Force-on then worked. So the gating signal asymmetry
+hinted at "actuation only fires on a state transition we can prove from
+the persisted history".
+
+Root cause was exactly that. `tick()` gated `_actuate_solaredge` on
+`record.state_changed`, which the engine computes as
+`ctx.previous_state != final_state`, where `previous_state` comes from
+the most recent persisted `Decision` row. While force-off is active,
+*every* persisted decision row has `state="off"` (the engine writes the
+override-applied final state, not the would-have-been auto state). When
+the override clears, the auto rule re-evaluates — but if the rule's
+natural state at that instant happens to also be OFF, or if the
+inverter has drifted from the persisted state for any other reason,
+`state_changed=False` and no Modbus write fires. The inverter stays
+pinned at 0 % from the original force-off write.
+
+Force-on broke the asymmetry because previous=OFF (from the forced
+rows) → final=ON → genuinely changed → actuation fired.
+
+Fix: drive actuation off the **actual hardware register**, not the
+persisted decision history. The SolarEdge tick read already returns
+`active_power_limit_pct` every poll — it was being discarded as
+`_solar_r`. Renamed it to `solar_r`, added `_needs_actuation(desired,
+solar_reading)` that compares the desired target (0 / 100) against the
+live read and returns True on mismatch (or when the read failed —
+better an extra write than a missed one). The actuation gate now uses
+this instead of `record.state_changed`. Self-healing against any drift
+between persisted decisions and hardware state, including but not
+limited to the override→auto transition.
+
+`record.state_changed` is still computed and persisted on the Decision
+row — it remains the right signal for "did the *decision* change" (used
+for logging and audit), it just isn't the right signal for "should we
+write to the register".
+
+### Reusable nuggets
+
+- **Decision history ≠ hardware state.** Any actuation gate built on
+  "did the persisted decision change" silently desynchronises the moment
+  the device's actual state diverges from what we *think* we last set
+  it to — a stale forced row, a failed write, an external operator
+  poking the register. If the device exposes its current state on read
+  (most do), gate on `desired != actual_read`. Falls back to True when
+  the read failed, so a transient read miss doesn't strand the device.
+- **Plot magnitude, encode sign in colour.** When a chart axis spans
+  both signs of a quantity that's mostly one-sided (prices, deltas, net
+  positions), bars rising in two directions waste vertical space and
+  fight any other series sharing the canvas. `abs(value)` + colour for
+  sign keeps the rare opposite-sign hours visually loud without
+  costing the common case.
+- **Chart.js bar gutter via transparent border.** `borderWidth: N`
+  with `borderColor: "transparent"` slims a bar by N px on each side
+  without drawing an outline. Removing the border to "tidy up" silently
+  widens every bar — easy regression to introduce.
+- **Tooltips need the raw value when bars show a transform.** If you
+  flip sign / abs / scale the y, smuggle the original through on the
+  data point (e.g. `_raw`) and pull it from `ctx.raw` in the tooltip
+  callback. Otherwise hovers display the *displayed* value, which is
+  correct-but-misleading.
+- **Don't pick chart colours in isolation.** Saturated red on the
+  dominant category drowns the rare-but-important categories in
+  the same chart. Grey-for-default + saturated-only-for-the-signal
+  preserves visual hierarchy when several series share the canvas.

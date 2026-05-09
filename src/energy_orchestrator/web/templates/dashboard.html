@@ -23,6 +23,14 @@
         </div>
         <div class="state-reason">setpoint <span id="state-etrel-setpoint">&mdash;</span> /
         <span id="state-etrel-max">&mdash;</span> A</div>
+        <form class="etrel-set-form" id="etrel-set-form" onsubmit="return false;">
+            <label for="etrel-set-current-input">Set</label>
+            <input type="number" id="etrel-set-current-input" min="0" max="16" step="1" value="6">
+            <span>A</span>
+            <button type="button" id="etrel-set-current-btn">Send</button>
+            <button type="button" id="etrel-dump-btn" title="Dump Etrel registers to log (use to find which reg holds Sonnen's clamp)">Dump regs</button>
+            <span class="etrel-set-status" id="etrel-set-current-status"></span>
+        </form>
     </div>
 </section>
 
@@ -58,7 +66,7 @@
                 <div class="solar-cell-value solar-cell-total" id="tile-charger-total">{% if reading and reading.car_charger_w is not none %}{{ "%.0f" | format(reading.car_charger_w) }} W{% else %}&mdash;{% endif %}</div>
             </div>
         </div>
-    </div>1
+    </div>
     <div class="tile tile-wide">
         <div class="tile-label">Solar production</div>
         <div class="solar-breakdown">

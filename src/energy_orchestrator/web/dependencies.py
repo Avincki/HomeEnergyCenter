@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from energy_orchestrator.config.models import AppConfig
 from energy_orchestrator.data import UnitOfWork
+from energy_orchestrator.devices.etrel import EtrelInchClient
 from energy_orchestrator.prices import PriceCache
 from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.web.override import OverrideController
@@ -45,3 +46,12 @@ def get_solar_cache(request: Request) -> SolarCache:
 def get_uow(request: Request) -> UnitOfWork:
     """Build a fresh UoW per request. The route awaits ``async with`` itself."""
     return UnitOfWork(get_session_factory(request))
+
+
+def get_etrel_client(request: Request) -> EtrelInchClient | None:
+    """Return the tick-loop-owned Etrel client, or ``None`` when unavailable.
+
+    ``None`` covers two cases — Etrel isn't configured, or the tick loop
+    wasn't started (tests). Routes should treat both as a 503-class error.
+    """
+    return getattr(request.app.state, "etrel_client", None)

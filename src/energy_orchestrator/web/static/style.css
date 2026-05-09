@@ -116,6 +116,35 @@ section h2 {
 .state-when { color: var(--muted); margin-top: 0.5rem; font-size: 0.85rem; }
 .state-col-right strong { color: var(--text); }
 
+.etrel-set-form {
+    margin-top: 0.75rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.9rem;
+    flex-wrap: wrap;
+}
+.etrel-set-form input[type="number"] {
+    width: 5rem;
+    padding: 0.25rem 0.4rem;
+    background: var(--panel-2);
+    color: var(--text);
+    border: 1px solid var(--panel-2);
+    border-radius: 4px;
+    font-size: 0.95rem;
+}
+.etrel-set-form button {
+    padding: 0.3rem 0.75rem;
+    background: var(--accent);
+    color: #000;
+    border: none;
+    border-radius: 4px;
+    font-weight: 600;
+    cursor: pointer;
+}
+.etrel-set-form button:disabled { opacity: 0.6; cursor: not-allowed; }
+.etrel-set-status { color: var(--muted); font-size: 0.85rem; }
+
 @media (max-width: 720px) {
     .state-card { flex-direction: column; gap: 1rem; }
     .state-col-right { border-left: none; padding-left: 0; border-top: 1px solid var(--panel-2); padding-top: 1rem; }

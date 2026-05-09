@@ -60,6 +60,7 @@ holding split for the Sonnen Smart-E-Grid variant.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from typing import Any
 
@@ -110,6 +111,23 @@ _VOLTAGE_MAX_V = 300.0
 # blows the 5 s tick budget without changing the outcome.
 _PYMODBUS_RETRIES = 1
 
+# Threshold for "did this float-valued setpoint actually change". The setpoints
+# are configured/written values (not analog measurements), so anything above
+# this is a real change rather than encoding/decoding precision noise.
+_SETPOINT_NOISE_A = 0.05
+
+# How close a holding-register pair's float32 decode must be to the active
+# setpoint to flag it as a candidate for the Sonnen cluster-limit register.
+# Wide enough to absorb transient mid-write inconsistency, narrow enough to
+# avoid false matches against unrelated float-shaped register pairs.
+_CLUSTER_MATCH_TOLERANCE_A = 0.5
+
+# Span of holding registers scanned per tick when looking for the register
+# Sonnen's cluster channel writes to. 48 covers the connector-1 live block
+# (where every documented Etrel write target lives) at one extra Modbus
+# round-trip per tick — cheap on LAN.
+_CLUSTER_SCAN_SPAN = 48
+
 _STATUS_LABELS: dict[int, str] = {
     0: "Available",
     1: "Plugged",
@@ -145,6 +163,22 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         # covering both input AND holding address spaces so a future
         # function-code mismatch is debuggable from a single log line.
         self._dump_done: bool = False
+        # Previous-tick values used for change-detection logging. Kept on the
+        # instance so consecutive ticks can emit "X went A → B" events only
+        # when something actually moved, instead of spamming every tick.
+        self._prev_status_code: int | None = None
+        self._prev_setpoint_a: float | None = None
+        self._prev_set_current_a: float | None = None
+        self._prev_diverged: bool | None = None
+        # Serializes the orchestrator's read tick against ad-hoc writes from
+        # the API. The Etrel firmware on this unit is unreliable when more
+        # than one Modbus TCP connection is open at once — a fresh client
+        # could TCP-connect successfully but get no PDU responses while the
+        # tick-loop's persistent client served reads fine. Routing every
+        # call through the same client and lock eliminates both contention
+        # vectors (multiple connections, interleaved transactions on one
+        # connection).
+        self._comm_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def _endpoint(self) -> str:
@@ -357,6 +391,10 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         return "".join(out)
 
     async def read_data(self) -> DeviceReading | None:
+        async with self._comm_lock:
+            return await self._read_data_unlocked()
+
+    async def _read_data_unlocked(self) -> DeviceReading | None:
         # Cheapest read first — failure here means the device isn't talking
         # at all (bad unit ID, Modbus disabled, …) and there's no point
         # spending more round-trips on the rest of the fields.
@@ -418,6 +456,22 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
                 # Already logged by _read; leave cache empty for next tick.
                 pass
 
+        # Per-tick scan for the Sonnen cluster register. Costs one extra
+        # Modbus round-trip; gives us the address Sonnen is writing to as
+        # soon as the clamp asserts. Targets ``setpoint_a`` (the active
+        # applied limit) — whatever holding-register pair currently holds
+        # that value is the most-restrictive constraint source.
+        cluster_candidates = await self._scan_holding_for_target(setpoint_a)
+
+        self._log_state_transitions(
+            status_code=status_code,
+            setpoint_a=setpoint_a,
+            set_current_a=set_current_a,
+            current_l1_a=current_l1_a,
+            power_kw=power_kw,
+            cluster_candidates=cluster_candidates,
+        )
+
         return DeviceReading(
             device_id=self.device_id,
             data={
@@ -434,9 +488,302 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
             quality=1.0,
         )
 
-    async def health_check(self) -> bool:
-        try:
-            await self._read_input_uint16(_IN_STATUS, label="health_check")
-        except DeviceError:
+    @staticmethod
+    def _float_changed(prev: float | None, curr: float | None) -> bool:
+        """True when ``curr`` differs from ``prev`` by more than the noise floor.
+
+        ``None`` on either side counts as a change unless both are ``None`` —
+        catches first-ever-read and went-missing-this-tick transitions.
+        """
+        if prev is None and curr is None:
             return False
-        return True
+        if prev is None or curr is None:
+            return True
+        return abs(prev - curr) > _SETPOINT_NOISE_A
+
+    def _log_state_transitions(
+        self,
+        *,
+        status_code: int,
+        setpoint_a: float,
+        set_current_a: float | None,
+        current_l1_a: float,
+        power_kw: float,
+        cluster_candidates: list[tuple[int, float]],
+    ) -> None:
+        """Emit one structured log event when the Etrel's observable state moves.
+
+        Designed to make Sonnen Smart-E-Grid behavior legible in the log:
+        Sonnen writes the cluster/load-guard channel on port 503 (which we
+        do not read), the orchestrator writes the setpoint on holding reg 8
+        via port 502, and the EV publishes its own cap. Etrel applies the
+        most-restrictive of all three into ``setpoint_a`` (input reg 4).
+
+        Therefore:
+        * ``set_current_a`` (holding reg 8 readback) reflects only what *we*
+          last wrote.
+        * ``setpoint_a`` (input reg 4) reflects whichever source is
+          currently the binding constraint.
+
+        ``setpoint_a`` < ``set_current_a`` (beyond noise) means *something
+        else* (Sonnen via port 503 / EV cap) is clamping the charger below
+        what we asked for — emitted as a one-shot ``setpoint_diverged=True``
+        event so a manual-write test can be correlated with the Sonnen
+        backend's reaction. The dual readback at every tick is logged at
+        DEBUG so verbose tracing is available without ad-hoc instrumentation.
+
+        Per-tick noise stays low: this only emits when something moved
+        (status / setpoint_a / set_current_a / divergence flag) past the
+        configured noise floor, so a quiet charger produces zero log lines
+        while a Sonnen-driven session produces one line per state change.
+        """
+        first_observation = self._prev_status_code is None
+
+        diverged = (
+            set_current_a is not None
+            and abs(setpoint_a - set_current_a) > _SETPOINT_NOISE_A
+            and setpoint_a < set_current_a
+        )
+
+        status_changed = self._prev_status_code != status_code
+        setpoint_changed = self._float_changed(self._prev_setpoint_a, setpoint_a)
+        set_current_changed = self._float_changed(self._prev_set_current_a, set_current_a)
+        diverged_changed = self._prev_diverged != diverged
+
+        # Render the candidate list as ``[(addr, val), …]`` for log
+        # readability — addresses are what we ultimately want to lock onto.
+        cluster_repr = (
+            [{"reg": a, "value": v} for a, v in cluster_candidates]
+            if cluster_candidates
+            else None
+        )
+
+        # DEBUG snapshot every tick — opt-in for users tracing minute-by-minute
+        # Sonnen behavior without changing log levels per-source.
+        logger.debug(
+            "etrel tick snapshot",
+            status=_status_label(status_code),
+            setpoint_a=setpoint_a,
+            set_current_a=set_current_a,
+            current_l1_a=current_l1_a,
+            power_kw=power_kw,
+            setpoint_diverged=diverged,
+            setpoint_minus_write=(
+                setpoint_a - set_current_a if set_current_a is not None else None
+            ),
+            cluster_candidates=cluster_repr,
+        )
+
+        if (
+            first_observation
+            or status_changed
+            or setpoint_changed
+            or set_current_changed
+            or diverged_changed
+        ):
+            event = "etrel state observed (first read)" if first_observation else "etrel state changed"
+            logger.info(
+                event,
+                status_prev=(
+                    None if self._prev_status_code is None
+                    else _status_label(self._prev_status_code)
+                ),
+                status=_status_label(status_code),
+                setpoint_a_prev=self._prev_setpoint_a,
+                setpoint_a=setpoint_a,
+                set_current_a_prev=self._prev_set_current_a,
+                set_current_a=set_current_a,
+                setpoint_diverged_prev=self._prev_diverged,
+                setpoint_diverged=diverged,
+                # Helps eyeball which actor is winning: 0 → us, negative →
+                # someone else clamping below our write, positive → shouldn't
+                # happen (Etrel takes the min).
+                setpoint_minus_write=(
+                    setpoint_a - set_current_a if set_current_a is not None else None
+                ),
+                custom_max_a=self._custom_max_a,
+                # Holding-register addresses whose float32 value matches
+                # ``setpoint_a`` — the one Sonnen wrote its cluster limit
+                # to is in here. Watch which address persistently tracks
+                # the clamp; that's the cluster-max register on this unit.
+                cluster_candidates=cluster_repr,
+            )
+
+        self._prev_status_code = status_code
+        self._prev_setpoint_a = setpoint_a
+        self._prev_set_current_a = set_current_a
+        self._prev_diverged = diverged
+
+    async def health_check(self) -> bool:
+        async with self._comm_lock:
+            try:
+                await self._read_input_uint16(_IN_STATUS, label="health_check")
+            except DeviceError:
+                return False
+            return True
+
+    async def set_charging_current_a(self, amps: float) -> None:
+        async with self._comm_lock:
+            await self._set_charging_current_a_unlocked(amps)
+
+    async def _set_charging_current_a_unlocked(self, amps: float) -> None:
+        """Write the set-current setpoint (holding regs 8..9, float32).
+
+        Uses **FC 0x06** (``write_register``) twice — once per word — rather
+        than FC 0x10 (``write_registers``). The first attempt with FC 0x10
+        observed a silent drop on this unit (TCP connect succeeded, the
+        Modbus request was sent, but no reply ever came back) which is the
+        firmware's documented behavior when the Sonnen Smart-E-Grid
+        cluster channel on port 503 holds control authority. FC 0x06 is
+        the more universally-accepted Modbus write across firmware
+        variants and is what we now use.
+
+        Trade-off: there's a brief (~tens of ms) window between the two
+        writes where reg 8 carries the new high word and reg 9 still has
+        the old low word, so a concurrent reader could decode a transient
+        garbage float. Acceptable for this diagnostic write path; would
+        need atomicity guarantees if this were ever moved into a control
+        loop.
+
+        Float32 word order matches what the read path detected from L1
+        voltage; on a fresh client (no successful read yet) it falls back
+        to the documented big-endian default.
+
+        Etrel applies the lower of (this setpoint, installer ceiling, EV
+        cap). ``0`` pauses the session; values above ``custom_max_a`` are
+        clamped by the charger itself.
+        """
+        client = await self._ensure_connected()
+        regs = AsyncModbusTcpClient.convert_to_registers(
+            float(amps),
+            AsyncModbusTcpClient.DATATYPE.FLOAT32,
+            word_order=self._word_order,
+        )
+        for word_offset, value in enumerate(regs):
+            address = _HOLD_SET_CURRENT_A + word_offset
+            ctx = self._log_ctx(_FC_HOLDING, address, 1)
+            try:
+                result = await client.write_register(
+                    address=address,
+                    value=value,
+                    device_id=self.config.unit_id,
+                )
+            except TimeoutError as e:
+                await self._drop_connection()
+                logger.warning(
+                    "etrel write timeout (FC 0x06 split)",
+                    field="set_current_a",
+                    word_offset=word_offset,
+                    raw_value=value,
+                    **ctx,
+                )
+                raise DeviceTimeoutError(
+                    f"Etrel write timed out at {self._endpoint} "
+                    f"(set_current_a word {word_offset + 1}/{len(regs)} "
+                    f"amps={amps:.2f})"
+                ) from e
+            except ModbusException as e:
+                await self._drop_connection()
+                logger.warning(
+                    "etrel write modbus error (FC 0x06 split)",
+                    field="set_current_a",
+                    word_offset=word_offset,
+                    raw_value=value,
+                    error=str(e),
+                    **ctx,
+                )
+                raise DeviceConnectionError(
+                    f"Etrel write error at {self._endpoint} "
+                    f"(set_current_a word {word_offset + 1}/{len(regs)} "
+                    f"amps={amps:.2f}): {e}"
+                ) from e
+            if result.isError():
+                logger.warning(
+                    "etrel write returned error result (FC 0x06 split)",
+                    field="set_current_a",
+                    word_offset=word_offset,
+                    raw_value=value,
+                    result=str(result),
+                    **ctx,
+                )
+                raise DeviceProtocolError(
+                    f"Etrel write returned error at {self._endpoint} "
+                    f"(set_current_a word {word_offset + 1}/{len(regs)} "
+                    f"amps={amps:.2f}): {result}"
+                )
+        logger.info(
+            "etrel set_current_a written (FC 0x06 split)",
+            amps=amps,
+            words_written=len(regs),
+            word_order=self._word_order,
+        )
+
+    async def _scan_holding_for_target(
+        self, target_a: float
+    ) -> list[tuple[int, float]]:
+        """Find holding-register pairs whose float32 decode is near ``target_a``.
+
+        Used to identify which register Sonnen's port-503 cluster channel
+        writes its current limit to. Etrel applies the most-restrictive of
+        all setpoint sources into ``setpoint_a`` (input reg 4) — so when
+        ``setpoint_a`` is being clamped below our write, *some* holding
+        register pair must hold a float32 equal to that clamp value. This
+        scan surfaces it.
+
+        Returns ``(address, value)`` per match, where ``address`` is the
+        first register of the pair. ``set_current_a`` (reg 8) is skipped
+        — it always reads back our own write, which would otherwise be a
+        false positive whenever our write equals the active limit.
+
+        On a read failure returns ``[]`` rather than raising; this is a
+        diagnostic, not part of the critical tick path.
+        """
+        try:
+            regs = await self._read(
+                _FC_HOLDING, 0, _CLUSTER_SCAN_SPAN, label="cluster_scan"
+            )
+        except DeviceError:
+            return []
+        candidates: list[tuple[int, float]] = []
+        for i in range(len(regs) - 1):
+            if i == _HOLD_SET_CURRENT_A:
+                continue
+            try:
+                v = self._decode_pair(regs, i, word_order=self._word_order)
+            except (ValueError, OverflowError):
+                continue
+            if abs(v - target_a) <= _CLUSTER_MATCH_TOLERANCE_A:
+                candidates.append((i, v))
+        return candidates
+
+    async def force_diagnostic_dump(self) -> None:
+        """Re-run the input+holding register dump (regs 0..47 and 990..1039).
+
+        Used to find which register Sonnen's port-503 cluster channel writes
+        to — the startup dump only captures values present at boot, but the
+        Sonnen-imposed limit is a runtime value. Trigger this with the
+        clamp active, then grep the log for the float32 column matching
+        the observed ``setpoint_a``: that register pair is the source.
+
+        Acquires the comm lock so the multi-block read can't interleave
+        with the orchestrator's tick.
+        """
+        async with self._comm_lock:
+            self._dump_done = False
+            await self._diagnostic_dump()
+
+    async def read_set_current_a(self) -> float:
+        """Read the write-side setpoint readback (holding reg 8..9, float32).
+
+        Diagnostic helper used by the API write endpoint to verify whether
+        a write took effect, even when the write request itself didn't
+        get an ACK. ``set_current_a`` reflects only what *we* (port 502)
+        last wrote; if it changed to our requested value, the write
+        succeeded silently.
+
+        Raises ``DeviceError`` on failure — caller decides how to surface.
+        """
+        async with self._comm_lock:
+            return await self._read_holding_float32(
+                _HOLD_SET_CURRENT_A, label="set_current_a_readback"
+            )

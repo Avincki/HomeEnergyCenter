@@ -10,16 +10,19 @@ This guide is written for the layout actually used on this device:
 | Thing | Value |
 |---|---|
 | Hostname | `HomeCenter` (so `HomeCenter.local` on the LAN) |
-| Login user that owns the app | `homecenter` |
-| App directory | `/home/homecenter/HomeEnergyCenter` |
-| Virtualenv | `/home/homecenter/HomeEnergyCenter/.venv` |
-| Config file | `/home/homecenter/HomeEnergyCenter/config.yaml` |
+| Admin / imager account | `alex` (has `sudo`) |
+| Service account that owns the app | `homecenter` (home dir `/opt/homecenter`) |
+| App directory | `/opt/homecenter/HomeEnergyCenter` |
+| Virtualenv | `/opt/homecenter/HomeEnergyCenter/.venv` |
+| Config file | `/opt/homecenter/HomeEnergyCenter/config.yaml` |
 | Web dashboard | port `8000` |
 | OS | Raspberry Pi OS (Debian *trixie*), Python 3.13 |
 
-> Any `sudo` command below can be run by any account with admin rights (on this
-> Pi that's the `alex` account). The `homecenter` account owns and runs the app
-> itself.
+> Two accounts are used on purpose: `alex` for everything that needs `sudo`, and
+> a dedicated `homecenter` system user that owns the app files and runs the
+> service. The `homecenter` user has `/opt/homecenter` as its home — not
+> `/home/homecenter` — because it was created as a system user with an explicit
+> `--home-dir` (see §4.0).
 
 > **Network requirement:** the Pi must be on the **same LAN** as your inverter,
 > battery and meters (this project assumes the `192.168.129.0/24` subnet). Modbus
@@ -56,11 +59,13 @@ This guide is written for the layout actually used on this device:
 4. **Choose Storage:** your microSD card / SSD.
 5. Click **Next → Edit Settings** and pre-configure:
    - **Hostname:** `HomeCenter`
-   - **Username / password:** `homecenter` + a password you'll remember. **Do not
-     leave it as `pi` / `raspberry`.** *(Tip: Raspberry Pi OS defaults to a UK
-     keyboard layout — if your password contains `@` or `"` and you'll be typing
-     it on a directly-attached keyboard, those two keys are swapped vs. a US
-     layout. Set the keyboard layout in this same dialog to avoid surprises.)*
+   - **Username / password:** `alex` (or whatever admin name you prefer) + a
+     password you'll remember. **Do not leave it as `pi` / `raspberry`.** This is
+     the everyday admin account — the dedicated `homecenter` service user gets
+     created later in §4.0. *(Tip: Raspberry Pi OS defaults to a UK keyboard
+     layout — if your password contains `@` or `"` and you'll be typing it on a
+     directly-attached keyboard, those two keys are swapped vs. a US layout. Set
+     the keyboard layout in this same dialog to avoid surprises.)*
    - **Wireless LAN:** only if you can't use Ethernet (Ethernet preferred).
    - **Locale:** time zone `Europe/Brussels`.
    - **Services tab → Enable SSH** (password or, better, public-key).
@@ -72,10 +77,10 @@ This guide is written for the layout actually used on this device:
 
 ## 3. First login & system update
 
-From your laptop:
+From your laptop, log in as the admin user you set in the imager:
 
 ```bash
-ssh homecenter@HomeCenter.local
+ssh alex@HomeCenter.local
 ```
 
 (If `.local` doesn't resolve, find the Pi's IP on your router and use that.)
@@ -101,13 +106,24 @@ Then open `sudo raspi-config` and set:
 
 ## 4. Install HomeEnergyCenter
 
-All of this runs as the **`homecenter`** user, in its home directory.
+### 4.0 Create the `homecenter` service user (one-time, as admin)
+
+The app runs under its own dedicated account with `/opt/homecenter` as its home —
+this keeps the orchestrator separate from your normal user data and makes the
+systemd unit hardening (§5) tighter. From the `alex` shell:
+
+```bash
+sudo useradd --system --create-home --home-dir /opt/homecenter --shell /bin/bash homecenter
+sudo -u homecenter -i           # you're now homecenter, in /opt/homecenter
+```
+
+The rest of §4 runs as `homecenter` in `/opt/homecenter`.
 
 ### 4.1 Get the code
 
 ```bash
-cd ~
-git clone <your-repo-url> HomeEnergyCenter      # → /home/homecenter/HomeEnergyCenter
+cd ~                            # = /opt/homecenter
+git clone <your-repo-url> HomeEnergyCenter      # → /opt/homecenter/HomeEnergyCenter
 cd HomeEnergyCenter
 ```
 
@@ -116,7 +132,7 @@ excluding local junk:
 
 ```bash
 rsync -av --exclude='.venv' --exclude='__pycache__' --exclude='*.db' \
-  ./HomeEnergyCenter/ homecenter@HomeCenter.local:/home/homecenter/HomeEnergyCenter/
+  ./HomeEnergyCenter/ homecenter@HomeCenter.local:/opt/homecenter/HomeEnergyCenter/
 ```
 
 ### 4.2 Virtualenv + install
@@ -200,21 +216,34 @@ Wants=network-online.target
 Type=simple
 User=homecenter
 Group=homecenter
-WorkingDirectory=/home/homecenter/HomeEnergyCenter
-Environment=EO_CONFIG=/home/homecenter/HomeEnergyCenter/config.yaml
-ExecStart=/home/homecenter/HomeEnergyCenter/.venv/bin/python main.py
+WorkingDirectory=/opt/homecenter/HomeEnergyCenter
+Environment=EO_CONFIG=/opt/homecenter/HomeEnergyCenter/config.yaml
+ExecStart=/opt/homecenter/HomeEnergyCenter/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=5
 # Light hardening — it only needs LAN access and its own data dir.
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=tmpfs
-ReadWritePaths=/home/homecenter/HomeEnergyCenter
+ProtectHome=true
+ReadWritePaths=/opt/homecenter/HomeEnergyCenter
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+> **Path warning:** every path in this unit must actually exist on disk.
+> Verify it before reloading systemd:
+>
+> ```bash
+> getent passwd homecenter                                       # 6th field = home dir
+> ls -d /opt/homecenter/HomeEnergyCenter/.venv/bin/python        # must succeed
+> ```
+>
+> If systemd later logs `Failed to set up mount namespacing … No such file or
+> directory` and `status=226/NAMESPACE`, it means one of the `/opt/homecenter/…`
+> paths in this file doesn't exist — fix the unit, `sudo systemctl daemon-reload`,
+> `sudo systemctl restart homeenergycenter`.
 
 Enable and start it:
 
@@ -397,6 +426,7 @@ text console.
 | `sudo` says **"Sorry, try again"** | Wrong password for that account. The prompt is invisible — no characters echo, that's normal. Check Caps Lock. If you set the password on a US-layout laptop but type it on a UK-layout Pi keyboard, `@`/`"` are swapped. If `homecenter` lacks admin rights, run `sudo` as the `alex` account instead. |
 | `alembic upgrade head` → **`table readings already exists`** | Stale DB from an interrupted run. On a fresh install: `rm data/orchestrator.db && alembic upgrade head`. |
 | Service won't start | `journalctl -u homeenergycenter -n 100 --no-pager` — usually a `config.yaml` validation error, or a wrong path in the unit file. |
+| `status=226/NAMESPACE` + "Failed to set up mount namespacing: … No such file or directory" | A path in the unit file doesn't exist. Confirm with `getent passwd homecenter` (home dir = 6th field) and `ls -d /opt/homecenter/HomeEnergyCenter/.venv/bin/python`. Fix the `WorkingDirectory` / `Environment=EO_CONFIG` / `ExecStart` / `ReadWritePaths` lines, then `sudo systemctl daemon-reload && sudo systemctl restart homeenergycenter`. |
 | `Address already in use` on port 8000 | Both the systemd service *and* a manual `python main.py` are running. Stop one. Find the listener: `sudo ss -ltnp | grep 8000`. |
 | `HomeCenter.local` doesn't resolve | Use the IP from your router. On the Pi: `ip -4 addr show` (look for the `192.168.129.x` address). |
 | Dashboard tile says a device is unreachable | Open `http://HomeCenter.local:8000/debug` — the health panel shows, per device, whether it's configured and reachable on its port. Fix the IP/token in `config.yaml`, then `sudo systemctl restart homeenergycenter`. |
@@ -410,16 +440,60 @@ text console.
 
 ## 9. Day-to-day
 
-- **Update the app:**
-  ```bash
-  sudo -u homecenter -i
-  cd ~/HomeEnergyCenter && git pull
-  source .venv/bin/activate && pip install -e . && alembic upgrade head
-  exit
-  sudo systemctl restart homeenergycenter
-  ```
+### 9.1 Update the app
+
+Run this whenever you want to pull new commits. The order matters: stop the
+service *before* touching files, otherwise the running Python holds the SQLite DB
+and a half-pulled tree can leave the next start in a weird state.
+
+```bash
+# 1. Stop the service.
+sudo systemctl stop homeenergycenter
+
+# 2. Switch to the service account.
+sudo -u homecenter -i
+cd ~/HomeEnergyCenter           # = /opt/homecenter/HomeEnergyCenter
+
+# 3. Make sure no local edits will block the pull.
+git status                      # expect "nothing to commit, working tree clean"
+                                # (config.yaml is gitignored — it won't show up)
+
+# 4. Pull latest code (fast-forward only — refuses if history has diverged).
+git pull --ff-only
+
+# 5. Refresh Python dependencies and apply any new DB migrations.
+source .venv/bin/activate
+pip install --upgrade pip wheel
+pip install -e .
+alembic upgrade head
+
+# 6. Back to the admin shell, restart, verify.
+exit
+sudo systemctl start homeenergycenter
+sudo systemctl status homeenergycenter        # expect "active (running)"
+journalctl -u homeenergycenter -n 50 --no-pager
+curl -sI http://localhost:8000/               # expect HTTP/1.1 200 OK
+```
+
+Common snags during an update:
+
+- **`git pull` → "Your local changes would be overwritten":** you've edited a
+  tracked file on the Pi. `git status` lists them. Either `git stash`, pull,
+  `git stash pop`; or `git restore <file>` to discard. Keep all your settings in
+  `config.yaml` (gitignored) — never edit tracked source on the Pi.
+- **Service fails to start after the update:**
+  `journalctl -u homeenergycenter -n 100 --no-pager`. The two usual causes are a
+  new required field in `config.yaml` (compare against `config.example.yaml`),
+  and a forgotten `alembic upgrade head`.
+- **If you originally installed via `rsync` from your Windows PC** instead of
+  `git clone`, step 4 is `rsync ...` from the same source — everything else is
+  identical.
+
+### 9.2 Other routine bits
+
 - **Go live:** once you trust the decisions shown in `/debug`, set
   `decision.dry_run: false` in `config.yaml` and `sudo systemctl restart homeenergycenter`.
-- **Update Tailscale:** it updates with the rest of the system on `sudo apt upgrade`.
+- **Update Tailscale:** picks up updates with the rest of the system on
+  `sudo apt update && sudo apt upgrade`.
 - **Bookmark on your phone:** `http://homecenter.<your-tailnet>.ts.net:8000` →
   Add to Home Screen — opens like an app.

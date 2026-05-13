@@ -1635,3 +1635,138 @@ write to the register".
   dominant category drowns the rare-but-important categories in
   the same chart. Grey-for-default + saturated-only-for-the-signal
   preserves visual hierarchy when several series share the canvas.
+
+## 2026-05-13 — Safe-default ON, dashboard tidy-up, drop Mercedes EQS stub
+
+Small-but-meaningful behaviour fix in the decision engine, a pass over
+the main dashboard to compress the tiles + chart header, and a
+deletion of the half-finished Mercedes EQS SoC integration.
+
+### Safe-default ON when injection price is unavailable
+
+`NegativeWindowForecastRule` (the fallback rule) previously returned
+OFF whenever `find_negative_injection_window_hours` returned 0 —
+including the case where **no price covered the current hour at all**
+(provider failure, empty cache, hour gap in the cached series). On a
+prolonged ENTSO-E or cache miss, the inverter could be parked at 0 %
+purely because we couldn't see the price, not because the price was
+bad. User's framing: "On is the safe status."
+
+Rule 4 now calls `get_current_hour_price` first. If it returns `None`
+the rule emits ON with reason `"injection price unavailable for current
+hour; default ON (safe)"`. The non-negative-but-data-present branch
+still falls back to OFF — we don't want to export at a loss when we
+*do* know the price. Two new unit tests in `test_decision_rules.py`
+pin the missing-prices behaviour (empty list and current-hour gap).
+
+Updated `test_orchestrator.py::test_tick_records_price_fetch_error`
+to match the new contract — its previous assertion of
+`decision.state == OFF` after a `PriceFetchError` was the exact
+behaviour we just inverted.
+
+### Dashboard tidy-up
+
+`dashboard.html` reordered + slimmed:
+
+1. **Removed** the "Recent decisions (last 24 h)" section from the
+   main tab. The Debug board (`/debug`) still renders it from
+   `recent_decisions` in `debug.html` — exact same data, just doesn't
+   need to live on the home page. Dropped the matching `applyHistory`
+   JS function and the `recent_decisions` view-context entry. Kept
+   the `/api/history` fetch because the chart still consumes
+   `history.readings`.
+2. **Renamed** the "House consumption" tile to "Consumption".
+3. **Reordered** so "Grid import" sits directly to the right of
+   "Consumption" — the two power-flow numbers a user wants to read
+   at a glance now share a row.
+4. **Removed** three tiles: "Injection price", "Override",
+   "Expected solar today". The first two are visible elsewhere
+   (price in the chart header, override flag in the state card); the
+   third moved into the chart heading.
+5. **New chart heading** `Price = <€/kWh> | SoC = <%> | Expected
+   Solar = <kWh>`. Three spans (`#chart-title-injection-price`,
+   `#chart-title-soc`, `#chart-title-solar-today`) get server-rendered
+   from the initial `reading` + `solar_today_kwh` context and live-
+   updated by `applyState` / `applySolarToday` on every 5 s refresh.
+   Added a small `.chart-title-meta` CSS rule for the muted-grey
+   subtitle styling (the user subsequently inlined the labels into
+   the heading itself, no longer using the class).
+
+User pushed back during a debug-cycle that the kWh value
+"didn't appear" in the chart heading. Verified the template and JS
+were both correct; the cause was a stale `solar_cache` because the
+Forecast.Solar fetch had hit its rate-limit cooldown (`mark_failed`
+from a 429). Documented in the chat that this is a data-side
+failure, not a template bug — the heading auto-recovers on the next
+successful fetch.
+
+### Removed the Mercedes EQS integration
+
+Stage-1 of the EQS-SoC integration had been scaffolded — full OAuth
+client (`devices/mercedes.py`), one-time auth CLI
+(`tools/mercedes_auth.py`), unit tests, and an optional
+`MercedesEqsConfig` slot on `AppConfig` — but never wired into the
+tick loop, devices registry, or web layer. User asked for it to be
+removed.
+
+Deletions:
+- `src/energy_orchestrator/devices/mercedes.py`
+- `src/energy_orchestrator/tools/mercedes_auth.py` and the surrounding
+  `tools/__init__.py` (the `tools` package existed only for this
+  CLI, removed entirely)
+- `tests/unit/test_devices_mercedes.py`
+- `MercedesEqsConfig` class + `mercedes:` field on `AppConfig` in
+  `config/models.py`
+- `nested.pop("mercedes", None)` line in `gui/binding.py` and the
+  comment referencing Stage 1 / Stage 2
+
+Updated the user's `hardware_ev_eqs.md` memory to record that the
+integration was attempted and removed, and that the Etrel has no
+SoC channel, so the orchestrator currently has no EV-SoC source.
+This is a deliberate gate — future sessions should not silently
+revive `MercedesEqsConfig` without user approval.
+
+### Test state
+
+275 → 276 passing after the changes (the missing-price test was
+flipped, plus two new Rule 4 tests). The two long-standing
+`test_orchestrator.py` failures
+(`test_tick_actuates_solaredge_on_state_change_when_not_dry_run`,
+`test_decision_interval_gates_subsequent_ticks`) were verified to
+also fail on clean `main` via `git stash` — they are fallout from
+the actuation-on-register-read change in `e215013` and are unrelated
+to today's edits. Not fixed in this session.
+
+### Reusable nuggets
+
+- **"Safe default" depends on what you're defaulting away from.**
+  When a control loop falls back due to missing data, the safe
+  state is the one whose worst-case cost is recoverable. For a
+  PV inverter, ON wastes energy at most (some grid export at an
+  unknown price); OFF can stall the household battery indefinitely
+  during a multi-hour price-feed outage. Inverting the default
+  cost me one comment ("we shouldn't export at a loss") that
+  was true for the non-negative-price branch but quietly
+  generalised itself to *all* zero-window cases including
+  missing-data. Distinguish "we have data and it says don't" from
+  "we have no data" before assigning a fallback.
+- **Untracked stubs are deletion-friendly, but check the seams.**
+  Mercedes had three untracked files plus modifications in two
+  tracked files. `git status` shows the untracked ones loud and
+  clear, but the tracked-file edits (the `mercedes:` field on
+  `AppConfig`, the `pop()` in `binding.py`) are easy to miss if
+  you only grep the untracked paths. `grep -ri mercedes` in
+  `src/` before declaring the deletion done caught both seams.
+- **Live-poll JS needs a fallback element on the page.** When the
+  initial server render produces e.g. `<span>—</span>` for missing
+  data, the JS that polls every 5 s needs to keep writing the
+  span even when its source goes null again — otherwise a
+  transient success followed by a permanent failure leaves the
+  stale "good" value frozen on screen. The pattern is: write the
+  formatted value or write `—`, never skip the write.
+- **Pre-existing failures need a stash test, not a guess.** Two
+  orchestrator tests failed after my changes; `git stash` +
+  re-run revealed both also failed on clean `main`, isolating
+  the regression to a single test that *was* mine. Without that
+  step I'd have over-attributed the failure surface and either
+  reverted good changes or spent time chasing unrelated bugs.

@@ -175,6 +175,22 @@ def test_forecast_saturation_returns_off() -> None:
     assert out.forecast_end_soc_pct == 110.0
 
 
+def test_forecast_missing_prices_defaults_to_on() -> None:
+    rule = NegativeWindowForecastRule()
+    # No prices at all (e.g. provider failure) -> default ON (safe state).
+    out = rule.evaluate(_ctx(prices=[]), _config())
+    assert out is not None
+    assert out.state is DecisionState.ON
+
+
+def test_forecast_current_hour_missing_defaults_to_on() -> None:
+    rule = NegativeWindowForecastRule()
+    # Prices exist but none cover NOW=12:00 -> default ON (safe state).
+    out = rule.evaluate(_ctx(prices=[_pp(13, -0.02), _pp(14, -0.02)]), _config())
+    assert out is not None
+    assert out.state is DecisionState.ON
+
+
 def test_forecast_zero_solar_means_battery_static_so_on() -> None:
     rule = NegativeWindowForecastRule()
     # No small-solar production -> SoC won't budge; still below full -> ON

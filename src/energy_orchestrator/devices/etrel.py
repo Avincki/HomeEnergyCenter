@@ -626,6 +626,37 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         async with self._comm_lock:
             await self._set_charging_current_a_unlocked(amps)
 
+    async def pause(self) -> None:
+        """Stop drawing current by writing setpoint = 0 A.
+
+        Thin semantic wrapper for ``set_charging_current_a(0.0)`` — exists so
+        rule-engine code reads as ``etrel.pause()`` instead of
+        ``etrel.set_charging_current_a(0.0)`` at the call site, which
+        clarifies intent and makes "what does this rule do to the charger"
+        legible without mentally decoding the magic value.
+
+        Caveat (Sonnen Smart-E-Grid Power Mode): the firmware on
+        Sonnen-managed Etrels is documented to auto-resume charging on
+        its own schedule when the EVSE is "stopped by external
+        circumstances" — i.e. our 0 A write may be overridden after some
+        delay by Sonnen's cluster channel (port 503, which we don't
+        read). Verify behaviour on this unit before relying on long
+        pauses; a one-off ``setpoint_diverged=True`` log line means
+        Sonnen has clamped above our 0 A.
+        """
+        await self.set_charging_current_a(0.0)
+
+    async def release(self, amps: float) -> None:
+        """Resume drawing current at ``amps`` (typically 6-16 A).
+
+        Thin wrapper for ``set_charging_current_a`` — symmetrical with
+        ``pause()`` so a rule's pause/release pair reads cleanly. The
+        16 A safety cap is enforced upstream (API endpoint + HTML form
+        + JS check); this method does not re-validate, since the rule
+        engine should be the only caller and is itself bounded.
+        """
+        await self.set_charging_current_a(amps)
+
     async def _set_charging_current_a_unlocked(self, amps: float) -> None:
         """Write the set-current setpoint (holding regs 8..9, float32).
 

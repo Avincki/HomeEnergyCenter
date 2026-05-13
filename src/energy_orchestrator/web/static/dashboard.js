@@ -493,24 +493,16 @@
         const neg = (v) => (v == null ? null : -v);
         setText("tile-soc", reading.battery_soc_pct != null
             ? reading.battery_soc_pct.toFixed(1) + "%" : "—");
+        setText("chart-title-soc", reading.battery_soc_pct != null
+            ? reading.battery_soc_pct.toFixed(1) + "%" : "—");
+        setText("chart-title-injection-price",
+            fmtNum(reading.injection_price_eur_per_kwh, 4, " €/kWh"));
         setText("tile-batt-power", fmtInt(neg(reading.battery_power_w), " W"));
         setText("tile-house", fmtInt(reading.house_consumption_w, " W"));
         applyChargerTile(state, reading);
         applyEtrelStateLine(state);
         applySolarTile(reading.small_solar_w, reading.large_solar_w);
         setText("tile-grid", fmtInt(neg(reading.grid_feed_in_w), " W"));
-        setText("tile-inj-price", fmtNum(reading.injection_price_eur_per_kwh, 4, " €/kWh"));
-        setText("tile-override", (override.mode || "auto").toUpperCase());
-
-        const overrideUntil = document.getElementById("tile-override-until");
-        if (overrideUntil) {
-            if (override.expires_at) {
-                overrideUntil.textContent = "until " + fmtTimeHM(override.expires_at);
-                overrideUntil.removeAttribute("hidden");
-            } else {
-                overrideUntil.setAttribute("hidden", "");
-            }
-        }
 
         const card = document.getElementById("state-card");
         if (card) {
@@ -550,39 +542,9 @@
         }
     }
 
-    function applyHistory(history) {
-        const decisions = (history.decisions || []).slice(-20).reverse();
-        const body = document.getElementById("recent-decisions-body");
-        const table = document.getElementById("recent-decisions-table");
-        const empty = document.getElementById("recent-decisions-empty");
-        if (!body) return;
-
-        if (decisions.length === 0) {
-            body.innerHTML = "";
-            if (table) table.setAttribute("hidden", "");
-            if (empty) empty.removeAttribute("hidden");
-            return;
-        }
-
-        body.innerHTML = decisions.map(d => {
-            const overrideCell = d.manual_override
-                ? escapeHtml(d.override_mode || "")
-                : "&mdash;";
-            return `<tr>
-                <td>${escapeHtml(fmtTimeShort(d.timestamp))}</td>
-                <td><span class="badge badge-${escapeHtml(d.state || "")}">${escapeHtml(d.state || "")}</span></td>
-                <td>${escapeHtml(d.rule_fired || "")}</td>
-                <td class="reason">${escapeHtml(d.reason || "")}</td>
-                <td>${overrideCell}</td>
-            </tr>`;
-        }).join("");
-        if (table) table.removeAttribute("hidden");
-        if (empty) empty.setAttribute("hidden", "");
-    }
-
     function applySolarToday(solarJson) {
         const wh = solarJson && solarJson.watt_hours_today;
-        setText("tile-solar-today",
+        setText("chart-title-solar-today",
             wh != null ? (wh / 1000.0).toFixed(1) + " kWh" : "—");
     }
 
@@ -615,7 +577,6 @@
                 fetchJson(urls.solar),
             ]);
             applyState(state);
-            applyHistory(history);
             applySolarToday(solarJson);
             updateChart(priceJson.prices || [], history.readings || [],
                         (solarJson && solarJson.points) || []);

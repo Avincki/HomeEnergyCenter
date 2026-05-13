@@ -386,6 +386,13 @@ pre {
     font-size: 0.9rem;
 }
 
+.chart-title-meta {
+    color: var(--muted);
+    font-weight: normal;
+    font-size: 0.9em;
+    margin-left: 0.25rem;
+}
+
 /* ----- Config form ----- */
 
 .config-form {

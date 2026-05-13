@@ -493,10 +493,6 @@
         const neg = (v) => (v == null ? null : -v);
         setText("tile-soc", reading.battery_soc_pct != null
             ? reading.battery_soc_pct.toFixed(1) + "%" : "—");
-        setText("chart-title-soc", reading.battery_soc_pct != null
-            ? reading.battery_soc_pct.toFixed(1) + "%" : "—");
-        setText("chart-title-injection-price",
-            fmtNum(reading.injection_price_eur_per_kwh, 4, " €/kWh"));
         setText("tile-batt-power", fmtInt(neg(reading.battery_power_w), " W"));
         setText("tile-house", fmtInt(reading.house_consumption_w, " W"));
         applyChargerTile(state, reading);
@@ -548,6 +544,17 @@
             wh != null ? (wh / 1000.0).toFixed(1) + " kWh" : "—");
     }
 
+    // Pull "now"'s injection price straight from the day-ahead price array
+    // instead of the latest Reading row. A stale tick loop (network glitch on
+    // the Pi) would otherwise leave the title pinned to whatever hour the
+    // last reading was written in.
+    function applyCurrentHourPrice(prices) {
+        const now = new Date();
+        const point = (prices || []).find(p => currentHourMatches(p.timestamp, now));
+        setText("chart-title-injection-price",
+            fmtNum(point ? point.injection_eur_per_kwh : null, 4, " €/kWh"));
+    }
+
     function buildChartUrls() {
         // /api/state always reflects the live device snapshot — independent
         // of the chart's date selector, since the tiles + state card show
@@ -578,6 +585,7 @@
             ]);
             applyState(state);
             applySolarToday(solarJson);
+            applyCurrentHourPrice(priceJson.prices || []);
             updateChart(priceJson.prices || [], history.readings || [],
                         (solarJson && solarJson.points) || []);
             const status = document.getElementById("dashboard-refresh-status");

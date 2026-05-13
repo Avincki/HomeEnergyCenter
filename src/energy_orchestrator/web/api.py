@@ -13,6 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
+import subprocess
+import sys
 from collections.abc import AsyncIterator, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -550,6 +554,35 @@ async def post_override(body: OverrideRequest, controller: OverrideDep) -> dict[
         )
     controller.set(mode=body.mode, minutes=body.minutes)
     return _override_to_dict(controller)
+
+
+@router.post("/shutdown")
+async def post_shutdown() -> dict[str, Any]:
+    """Stop the orchestrator and (on Linux) close the chromium kiosk.
+
+    Triggered by the dashboard's Exit button. Kiosk fullscreen on the Pi
+    leaves no other way to close the app — without this the user would
+    need SSH or a keyboard shortcut to escape. Schedules the kill in a
+    background task so the HTTP response can return before uvicorn exits.
+    """
+    pid = os.getpid()
+
+    async def _shutdown() -> None:
+        await asyncio.sleep(0.5)
+        if sys.platform.startswith("linux"):
+            try:
+                subprocess.run(  # noqa: S603,S607
+                    ["pkill", "-f", "chromium"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+            except FileNotFoundError:
+                pass
+        os.kill(pid, signal.SIGTERM)
+
+    asyncio.create_task(_shutdown())
+    return {"status": "shutting down"}
 
 
 @router.post("/etrel/diagnostic-dump")

@@ -104,7 +104,7 @@
 </section>
 
 <section>
-    <h2>Price = <span id="chart-title-injection-price">{% if reading and reading.injection_price_eur_per_kwh is not none %}{{ "%.4f" | format(reading.injection_price_eur_per_kwh) }} &euro;/kWh{% else %}&mdash;{% endif %}</span> | SoC = <span id="chart-title-soc">{% if reading and reading.battery_soc_pct is not none %}{{ "%.1f" | format(reading.battery_soc_pct) }}%{% else %}&mdash;{% endif %}</span> | Expected Solar = <span id="chart-title-solar-today">{% if solar_today_kwh is not none %}{{ "%.1f" | format(solar_today_kwh) }} kWh{% else %}&mdash;{% endif %}</span></h2>
+    <h2>Price = <span id="chart-title-injection-price">{% if reading and reading.injection_price_eur_per_kwh is not none %}{{ "%.4f" | format(reading.injection_price_eur_per_kwh) }} &euro;/kWh{% else %}&mdash;{% endif %}</span> | Expected Solar = <span id="chart-title-solar-today">{% if solar_today_kwh is not none %}{{ "%.1f" | format(solar_today_kwh) }} kWh{% else %}&mdash;{% endif %}</span></h2>
     <div class="chart-nav">
         <button type="button" id="chart-prev" class="chart-nav-btn">&laquo; Prev</button>
         <button type="button" id="chart-today" class="chart-nav-btn">Today</button>

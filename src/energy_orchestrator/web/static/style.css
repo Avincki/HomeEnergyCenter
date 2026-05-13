@@ -582,3 +582,19 @@ pre {
 .log-level-warning  { color: var(--warn); }
 .log-level-error    { color: var(--error); }
 .log-level-critical { color: #fff; background: var(--error); padding: 0 0.3rem; border-radius: 2px; }
+
+/* 720x1280 portrait kiosk panel (Pi touchscreen).
+   Forces row 1 = 4 narrow tiles (SoC / batt power / consumption / grid),
+   row 2 = 2 wide tiles (car chargers / solar). The default auto-fit grid
+   collapses to fewer columns at this width because the 180px minmax
+   threshold no longer fits — pin to 4 explicit columns here. */
+@media (orientation: portrait) and (min-width: 700px) and (max-width: 760px) {
+    main { padding: 0.75rem; }
+    .tiles {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.5rem;
+    }
+    .tile { padding: 0.6rem 0.7rem; }
+    .tile-value { font-size: 1.1rem; }
+    .tile-wide { grid-column: span 2; }
+}

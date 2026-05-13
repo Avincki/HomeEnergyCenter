@@ -406,7 +406,58 @@ sudo loginctl enable-linger homecenter
 sudo systemctl enable --now kiosk.service
 ```
 
-### 7.3 Reboot and check
+### 7.3 Screen orientation (landscape / portrait)
+
+If you're using a touchscreen mounted in portrait — or just want to flip the
+default orientation — set it with `wlr-randr` and persist it from the same
+`labwc` autostart file you use for the kiosk.
+
+**Find the output name** (from a graphical session terminal):
+
+```bash
+wlr-randr
+```
+
+You'll see something like `HDMI-A-1` (HDMI monitor), `DSI-1` (official 7"
+touchscreen), or `DPI-1`. Note the exact name.
+
+**Try a rotation live** to confirm it looks right:
+
+```bash
+wlr-randr --output HDMI-A-1 --transform 90        # portrait, top of screen on the left
+wlr-randr --output HDMI-A-1 --transform 270       # portrait, top of screen on the right
+wlr-randr --output HDMI-A-1 --transform 180       # upside-down landscape
+wlr-randr --output HDMI-A-1 --transform normal    # default landscape
+```
+
+The screen rotates instantly. Tap around — Wayland re-maps touch coordinates to
+the rotated output automatically, so taps should land under your finger. (If
+they don't, see the troubleshooting table.)
+
+**Persist across reboots** — add the chosen rotation to
+`~/.config/labwc/autostart`, *before* the `chromium-browser` line so the
+dashboard renders into the rotated output from the start:
+
+```sh
+wlr-randr --output HDMI-A-1 --transform 90 &
+unclutter --timeout 1 &
+chromium-browser --kiosk --noerrdialogs --disable-infobars --no-first-run \
+  --check-for-update-interval=31536000 \
+  --app=http://localhost:8000 &
+```
+
+> **GUI alternative (desktop image only):** top-left menu →
+> **Preferences → Screen Configuration**, right-click the monitor →
+> **Orientation → Right / Left / Inverted / Normal**, **Apply**, then **Save**
+> (writes the right per-compositor config file for you).
+
+> **Official 7" DSI touchscreen, 180° only:** if all you need is to flip it
+> upside down for a stand with the ribbon at the top, the firmware can do it
+> on its own — add `lcd_rotate=2` to `/boot/firmware/config.txt` and reboot.
+> For 90 / 270° stick with `wlr-randr`; the firmware rotate parameters are
+> deprecated on the Pi 5 KMS stack for arbitrary angles.
+
+### 7.4 Reboot and check
 
 ```bash
 sudo reboot
@@ -434,6 +485,7 @@ text console.
 | `tailscale up` won't authenticate | Make sure the install script finished (`apt install tailscale` step). Re-run `sudo tailscale up` and open the printed URL in a browser where you're logged into the right Tailscale account. |
 | Chromium opens but "connection refused" | The app isn't up yet. The `cage` unit waits for it; for the desktop autostart files, prefix the `chromium-browser` line with `sleep 5 &&` if it loses the race at boot. |
 | Screen goes black after a few minutes | `raspi-config` → Display Options → Screen Blanking → No; confirm `unclutter` / `dpms = false` in place; reboot. |
+| Screen rotated correctly but touch is in the wrong place | Wayland normally re-maps touch with the output, but on some no-name USB touchscreens the touch device isn't bound to the output. Find the touch device with `libinput list-devices \| grep -A1 -i touch`, then bind it to the output in `~/.config/labwc/rc.xml` (`<map-to-output>HDMI-A-1</map-to-output>` in the libinput section) and reboot. The official Pi DSI touchscreen and the Waveshare DSI panels don't need this. |
 | Pi throttles / gets hot | Use the active cooler or fan case. `vcgencmd get_throttled` should report `0x0`. |
 
 ---

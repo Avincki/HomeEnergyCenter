@@ -46,6 +46,7 @@ from energy_orchestrator.web.dependencies import (
     get_price_cache,
     get_solar_cache,
     get_uow,
+    require_same_origin,
 )
 from energy_orchestrator.web.override import OverrideController
 
@@ -529,7 +530,7 @@ async def _tail_log_sse(
         await asyncio.to_thread(f.close)
 
 
-@router.post("/source-status/clear-errors")
+@router.post("/source-status/clear-errors", dependencies=[Depends(require_same_origin)])
 async def clear_source_errors(uow: UowDep) -> dict[str, Any]:
     """Null out ``last_error_at`` + ``last_error_message`` on every source row.
 
@@ -543,7 +544,7 @@ async def clear_source_errors(uow: UowDep) -> dict[str, Any]:
     return {"cleared": rows}
 
 
-@router.post("/override")
+@router.post("/override", dependencies=[Depends(require_same_origin)])
 async def post_override(body: OverrideRequest, controller: OverrideDep) -> dict[str, Any]:
     if body.mode is OverrideMode.AUTO and body.minutes is not None:
         raise HTTPException(
@@ -554,7 +555,7 @@ async def post_override(body: OverrideRequest, controller: OverrideDep) -> dict[
     return _override_to_dict(controller)
 
 
-@router.post("/shutdown")
+@router.post("/shutdown", dependencies=[Depends(require_same_origin)])
 async def post_shutdown() -> dict[str, Any]:
     """Close the chromium kiosk and drop back to the desktop session.
 
@@ -582,7 +583,7 @@ async def post_shutdown() -> dict[str, Any]:
     return {"status": "closing kiosk"}
 
 
-@router.post("/etrel/diagnostic-dump")
+@router.post("/etrel/diagnostic-dump", dependencies=[Depends(require_same_origin)])
 async def post_etrel_diagnostic_dump(
     config: ConfigDep, etrel_client: EtrelClientDep
 ) -> dict[str, Any]:
@@ -605,7 +606,7 @@ async def post_etrel_diagnostic_dump(
     return {"status": "ok", "message": "diagnostic dump triggered, see log"}
 
 
-@router.post("/etrel/set-current")
+@router.post("/etrel/set-current", dependencies=[Depends(require_same_origin)])
 async def post_etrel_set_current(
     body: EtrelSetCurrentRequest,
     config: ConfigDep,

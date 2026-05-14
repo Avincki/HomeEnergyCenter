@@ -45,8 +45,13 @@
         <div class="tile-hint">positive = charging</div>
     </div>
     <div class="tile">
-        <div class="tile-label">House consumption</div>
+        <div class="tile-label">Consumption</div>
         <div class="tile-value" id="tile-house">{% if reading and reading.house_consumption_w is not none %}{{ "%.0f" | format(reading.house_consumption_w) }} W{% else %}&mdash;{% endif %}</div>
+    </div>
+    <div class="tile">
+        <div class="tile-label">Grid import</div>
+        <div class="tile-value" id="tile-grid">{% if reading and reading.grid_feed_in_w is not none %}{{ "%.0f" | format(-reading.grid_feed_in_w) }} W{% else %}&mdash;{% endif %}</div>
+        <div class="tile-hint">positive = importing</div>
     </div>
     <div class="tile tile-wide">
         <div class="tile-label">Car chargers</div>
@@ -96,29 +101,10 @@
             </div>
         </div>
     </div>
-    <div class="tile">
-        <div class="tile-label">Grid import</div>
-        <div class="tile-value" id="tile-grid">{% if reading and reading.grid_feed_in_w is not none %}{{ "%.0f" | format(-reading.grid_feed_in_w) }} W{% else %}&mdash;{% endif %}</div>
-        <div class="tile-hint">positive = importing</div>
-    </div>
-    <div class="tile">
-        <div class="tile-label">Injection price</div>
-        <div class="tile-value" id="tile-inj-price">{% if reading and reading.injection_price_eur_per_kwh is not none %}{{ "%.4f" | format(reading.injection_price_eur_per_kwh) }} €/kWh{% else %}&mdash;{% endif %}</div>
-    </div>
-    <div class="tile">
-        <div class="tile-label">Override</div>
-        <div class="tile-value" id="tile-override">{{ override.mode | upper }}</div>
-        <div class="tile-hint" id="tile-override-until" {% if not override.expires_at %}hidden{% endif %}>{% if override.expires_at %}until {{ override.expires_at | localtime("%H:%M") }}{% endif %}</div>
-    </div>
-    <div class="tile">
-        <div class="tile-label">Expected solar today</div>
-        <div class="tile-value" id="tile-solar-today">{% if solar_today_kwh is not none %}{{ "%.1f" | format(solar_today_kwh) }} kWh{% else %}&mdash;{% endif %}</div>
-        <div class="tile-hint">forecast.solar</div>
-    </div>
 </section>
 
 <section>
-    <h2>Day-ahead price + battery SoC</h2>
+    <h2>Price = <span id="chart-title-injection-price">{% if reading and reading.injection_price_eur_per_kwh is not none %}{{ "%.4f" | format(reading.injection_price_eur_per_kwh) }} &euro;/kWh{% else %}&mdash;{% endif %}</span> | Expected Solar = <span id="chart-title-solar-today">{% if solar_today_kwh is not none %}{{ "%.1f" | format(solar_today_kwh) }} kWh{% else %}&mdash;{% endif %}</span></h2>
     <div class="chart-nav">
         <button type="button" id="chart-prev" class="chart-nav-btn">&laquo; Prev</button>
         <button type="button" id="chart-today" class="chart-nav-btn">Today</button>
@@ -128,28 +114,7 @@
     <div class="chart-card chart-card-tall">
         <canvas id="mainChart"></canvas>
     </div>
-    <p class="hint">Bars = injection &euro;/kWh (left axis; red = negative, accent outline = current hour). Green line = battery SoC % (right axis). Filled orange = forecast solar power, summed across arrays (far right axis, kW). Yellow line = measured total solar (small + large), kW.</p>
-</section>
-
-<section>
-    <h2>Recent decisions (last 24 h)</h2>
-    <table id="recent-decisions-table" {% if not recent_decisions %}hidden{% endif %}>
-        <thead>
-            <tr><th>When</th><th>State</th><th>Rule</th><th>Reason</th><th>Override</th></tr>
-        </thead>
-        <tbody id="recent-decisions-body">
-        {% for d in recent_decisions | reverse %}
-            <tr>
-                <td>{{ d.timestamp | localtime("%H:%M:%S") }}</td>
-                <td><span class="badge badge-{{ d.state }}">{{ d.state }}</span></td>
-                <td>{{ d.rule_fired }}</td>
-                <td class="reason">{{ d.reason }}</td>
-                <td>{% if d.manual_override %}{{ d.override_mode }}{% else %}&mdash;{% endif %}</td>
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    <p class="empty" id="recent-decisions-empty" {% if recent_decisions %}hidden{% endif %}>No decisions logged yet.</p>
+    <p class="hint" id="chart-legend-hint">Bars = injection &euro;/kWh (left axis; red = negative, accent outline = current hour). Green line = battery SoC % (right axis). Filled orange = forecast solar power, summed across arrays (far right axis, kW). Yellow line = measured total solar (small + large), kW.</p>
 </section>
 
 <p class="hint" id="dashboard-refresh-status">Live &mdash; refreshing every 5 s.</p>

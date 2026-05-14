@@ -80,7 +80,6 @@ async def dashboard(
     async with uow:
         latest_reading = await uow.readings.latest()
         latest_decision = await uow.decisions.latest()
-        recent_decisions = list(await uow.decisions.recent(hours=24))
     forecast = solar_cache.forecast()
     solar_today_kwh = (
         forecast.watt_hours_today / 1000.0
@@ -93,7 +92,6 @@ async def dashboard(
         context={
             "reading": latest_reading,
             "decision": latest_decision,
-            "recent_decisions": recent_decisions[-20:],
             "override": _override_summary(controller),
             "solar_today_kwh": solar_today_kwh,
         },

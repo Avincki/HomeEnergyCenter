@@ -66,10 +66,10 @@ def config_to_form(config: AppConfig) -> AppConfigForm:
     enums use their ``.value``; paths are rendered as POSIX strings.
     """
     nested = config.model_dump(mode="python")
-    # Drop optional top-level sections that the web form doesn't render
-    # (currently just ``solar``). Otherwise _flatten would emit them as
+    # Drop optional top-level sections that the web form doesn't render —
+    # ``solar`` is always YAML-only. Otherwise _flatten would emit it as
     # ``solar: ""`` and form_to_config would feed that back to Pydantic,
-    # which rejects empty-string-as-SolarConfig.
+    # which rejects empty-string-as-Config.
     nested.pop("solar", None)
     # Same treatment for optional nested sub-sections — a None value would
     # become a stray ``homewizard.large_solar: ""`` form key that Pydantic

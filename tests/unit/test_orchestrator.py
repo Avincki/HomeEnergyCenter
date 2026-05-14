@@ -403,11 +403,12 @@ async def test_tick_records_price_fetch_error(
     assert prices_status is not None
     assert prices_status.last_error_message is not None
     assert "503" in prices_status.last_error_message
-    # Decision still happens (rule 4 falls back to OFF since no negative window).
+    # Decision still happens; with no price data, rule 4 defaults to ON
+    # (safe state — we don't curtail when we can't verify the price).
     async with UnitOfWork(session_factory) as uow:
         decision = await uow.decisions.latest()
     assert decision is not None
-    assert decision.state == DecisionState.OFF.value
+    assert decision.state == DecisionState.ON.value
 
 
 async def test_decision_interval_gates_subsequent_ticks(

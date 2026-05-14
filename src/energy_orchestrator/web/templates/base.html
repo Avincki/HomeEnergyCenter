@@ -16,8 +16,18 @@
             <a href="/config">Config</a>
             <a href="/logs">Logs</a>
             <a href="/docs">API</a>
+            <a href="#" id="nav-exit" onclick="return exitApp();">Exit</a>
         </nav>
     </header>
+    <script>
+        function exitApp() {
+            if (!confirm("Close the kiosk and return to the desktop? (The orchestrator keeps running in the background.)")) return false;
+            fetch("/api/shutdown", { method: "POST" }).catch(function () {});
+            document.body.innerHTML =
+                "<div style='padding:2rem;color:#94a3b8;font-family:sans-serif;'>Closing kiosk…</div>";
+            return false;
+        }
+    </script>
     <main>
         {% block content %}{% endblock %}
     </main>

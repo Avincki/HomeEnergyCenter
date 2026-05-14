@@ -504,18 +504,6 @@
         applyEtrelStateLine(state);
         applySolarTile(reading.small_solar_w, reading.large_solar_w);
         setText("tile-grid", fmtInt(neg(reading.grid_feed_in_w), " W"));
-        setText("tile-inj-price", fmtNum(reading.injection_price_eur_per_kwh, 4, " €/kWh"));
-        setText("tile-override", (override.mode || "auto").toUpperCase());
-
-        const overrideUntil = document.getElementById("tile-override-until");
-        if (overrideUntil) {
-            if (override.expires_at) {
-                overrideUntil.textContent = "until " + fmtTimeHM(override.expires_at);
-                overrideUntil.removeAttribute("hidden");
-            } else {
-                overrideUntil.setAttribute("hidden", "");
-            }
-        }
 
         const card = document.getElementById("state-card");
         if (card) {
@@ -555,40 +543,21 @@
         }
     }
 
-    function applyHistory(history) {
-        const decisions = (history.decisions || []).slice(-20).reverse();
-        const body = document.getElementById("recent-decisions-body");
-        const table = document.getElementById("recent-decisions-table");
-        const empty = document.getElementById("recent-decisions-empty");
-        if (!body) return;
-
-        if (decisions.length === 0) {
-            body.innerHTML = "";
-            if (table) table.setAttribute("hidden", "");
-            if (empty) empty.removeAttribute("hidden");
-            return;
-        }
-
-        body.innerHTML = decisions.map(d => {
-            const overrideCell = d.manual_override
-                ? escapeHtml(d.override_mode || "")
-                : "&mdash;";
-            return `<tr>
-                <td>${escapeHtml(fmtTimeShort(d.timestamp))}</td>
-                <td><span class="badge badge-${escapeHtml(d.state || "")}">${escapeHtml(d.state || "")}</span></td>
-                <td>${escapeHtml(d.rule_fired || "")}</td>
-                <td class="reason">${escapeHtml(d.reason || "")}</td>
-                <td>${overrideCell}</td>
-            </tr>`;
-        }).join("");
-        if (table) table.removeAttribute("hidden");
-        if (empty) empty.setAttribute("hidden", "");
-    }
-
     function applySolarToday(solarJson) {
         const wh = solarJson && solarJson.watt_hours_today;
-        setText("tile-solar-today",
+        setText("chart-title-solar-today",
             wh != null ? (wh / 1000.0).toFixed(1) + " kWh" : "—");
+    }
+
+    // Pull "now"'s injection price straight from the day-ahead price array
+    // instead of the latest Reading row. A stale tick loop (network glitch on
+    // the Pi) would otherwise leave the title pinned to whatever hour the
+    // last reading was written in.
+    function applyCurrentHourPrice(prices) {
+        const now = new Date();
+        const point = (prices || []).find(p => currentHourMatches(p.timestamp, now));
+        setText("chart-title-injection-price",
+            fmtNum(point ? point.injection_eur_per_kwh : null, 4, " €/kWh"));
     }
 
     function buildChartUrls() {
@@ -627,8 +596,8 @@
                 fetchJson(urls.solar),
             ]);
             applyState(state);
-            applyHistory(history);
             applySolarToday(solarJson);
+            applyCurrentHourPrice(priceJson.prices || []);
             updateChart(priceJson.prices || [], history.readings || [],
                         (solarJson && solarJson.points) || []);
             const status = document.getElementById("dashboard-refresh-status");

@@ -498,6 +498,38 @@ Run this whenever you want to pull new commits. The order matters: stop the
 service *before* touching files, otherwise the running Python holds the SQLite DB
 and a half-pulled tree can leave the next start in a weird state.
 
+#### From your PC, one shot over SSH (recommended)
+
+Push your local commits, then have the Pi do the whole update in a single
+SSH session. Works from PowerShell, Git Bash, or WSL — the outer double
+quotes let your shell pass the command through, while the inner single
+quotes preserve the bash sub-command for the Pi:
+
+```bash
+# 1. Commit + push from your dev machine (skip if nothing local to push).
+git add -A
+git commit -m "your message"
+git push origin main
+
+# 2. Stop, pull, reinstall, migrate, restart — all on the Pi.
+#    -t allocates a TTY so sudo can prompt for the admin password; sudo -v
+#    primes the credential cache so the later sudos don't re-prompt.
+ssh -t alex@HomeCenter.local "sudo -v && sudo systemctl stop homeenergycenter && sudo -u homecenter bash -lc 'cd ~/HomeEnergyCenter && git pull --ff-only && source .venv/bin/activate && pip install -e . && alembic upgrade head' && sudo systemctl start homeenergycenter && sudo systemctl status homeenergycenter --no-pager | head -20"
+
+# 3. Sanity check from your PC.
+curl -sI http://HomeCenter.local:8000/        # or http://homecenter.<tailnet>.ts.net:8000/
+```
+
+If anything in the chained command fails (`&&` short-circuits), the service
+stays stopped — re-run the §"step by step" block below from the Pi to
+inspect each stage, fix the issue, and bring it back up.
+
+#### Step by step on the Pi
+
+If you'd rather run it interactively, or something broke and you need to
+inspect after each step:
+
+
 ```bash
 # 1. Stop the service.
 sudo systemctl stop homeenergycenter

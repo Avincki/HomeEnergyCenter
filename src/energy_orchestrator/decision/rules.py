@@ -97,14 +97,22 @@ class NegativeWindowForecastRule(Rule):
     """Rule 4 (fallback): forecast SoC over the upcoming negative-injection
     window and decide ON if the battery has headroom, OFF if it would saturate.
 
-    Always returns an outcome. If no negative window is detected, it falls back
-    to OFF (we shouldn't produce when injection is non-positive and rules 1-3
-    didn't fire — that means the user is exporting at a loss).
+    Always returns an outcome. If injection price data is missing for the
+    current hour we default to ON: ON is the safe state for the inverter
+    (production allowed), and without price info we cannot justify curtailing.
+    If we *do* have a price and it is non-negative, fall back to OFF (rules
+    1-3 didn't fire, so producing would be exporting at a non-positive price).
     """
 
     name: ClassVar[str] = "negative_window_forecast"
 
     def evaluate(self, ctx: TickContext, config: DecisionConfig) -> RuleOutcome | None:
+        current = get_current_hour_price(ctx.prices, ctx.timestamp)
+        if current is None:
+            return RuleOutcome(
+                state=DecisionState.ON,
+                reason="injection price unavailable for current hour; default ON (safe)",
+            )
         window_hours = find_negative_injection_window_hours(ctx.prices, ctx.timestamp)
         if window_hours == 0:
             return RuleOutcome(

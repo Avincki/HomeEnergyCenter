@@ -453,3 +453,45 @@ async def test_connection_dropped_on_modbus_error(mocker: MockerFixture) -> None
     assert client._client is None
     instance.close.assert_called()
     await client.close()
+
+
+# ----- pause / release semantic wrappers ---------------------------------------
+
+
+async def test_pause_writes_zero_amps(mocker: MockerFixture) -> None:
+    """``pause()`` is a thin wrapper for ``set_charging_current_a(0.0)`` —
+    the rule engine calls it instead of the magic-value form, but the wire
+    behaviour must stay identical so existing diagnostics and write-path
+    safety nets still apply."""
+    client = EtrelInchClient(_config())
+    set_current = mocker.patch.object(
+        client, "set_charging_current_a", new=AsyncMock()
+    )
+    await client.pause()
+    set_current.assert_awaited_once_with(0.0)
+
+
+async def test_release_writes_requested_amps(mocker: MockerFixture) -> None:
+    """``release(amps)`` mirrors ``pause()`` — symmetric naming for rule
+    code, no extra logic on the write itself."""
+    client = EtrelInchClient(_config())
+    set_current = mocker.patch.object(
+        client, "set_charging_current_a", new=AsyncMock()
+    )
+    await client.release(8.0)
+    set_current.assert_awaited_once_with(8.0)
+
+
+async def test_release_does_not_clamp_amps_caller_owns_safety(
+    mocker: MockerFixture,
+) -> None:
+    """Per the docstring contract, ``release()`` does not enforce the 16 A
+    cap — that's the API/UI/JS layers' job. If a rule passes 30 A, that's
+    the rule's bug; the wrapper should still forward verbatim so the
+    real failure shows up at the documented choke point."""
+    client = EtrelInchClient(_config())
+    set_current = mocker.patch.object(
+        client, "set_charging_current_a", new=AsyncMock()
+    )
+    await client.release(30.0)
+    set_current.assert_awaited_once_with(30.0)

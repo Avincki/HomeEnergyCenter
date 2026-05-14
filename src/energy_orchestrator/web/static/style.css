@@ -386,6 +386,13 @@ pre {
     font-size: 0.9rem;
 }
 
+.chart-title-meta {
+    color: var(--muted);
+    font-weight: normal;
+    font-size: 0.9em;
+    margin-left: 0.25rem;
+}
+
 /* ----- Config form ----- */
 
 .config-form {
@@ -575,3 +582,24 @@ pre {
 .log-level-warning  { color: var(--warn); }
 .log-level-error    { color: var(--error); }
 .log-level-critical { color: #fff; background: var(--error); padding: 0 0.3rem; border-radius: 2px; }
+
+/* 720x1280 portrait kiosk panel (Pi touchscreen).
+   Forces row 1 = 4 narrow tiles (SoC / batt power / consumption / grid),
+   row 2 = 2 wide tiles (car chargers / solar). The default auto-fit grid
+   collapses to fewer columns at this width because the 180px minmax
+   threshold no longer fits — pin to 4 explicit columns here. */
+@media (orientation: portrait) and (min-width: 700px) and (max-width: 760px) {
+    main { padding: 0.75rem; }
+    .tiles {
+        grid-template-columns: repeat(4, 1fr);
+        gap: 0.5rem;
+    }
+    .tile { padding: 0.6rem 0.7rem; }
+    .tile-value { font-size: 1.1rem; }
+    .tile-wide { grid-column: span 2; }
+    /* No room for the chart legend, refresh status, or the project footer
+       on the kiosk panel — the data itself is the whole point. */
+    #chart-legend-hint,
+    #dashboard-refresh-status,
+    footer { display: none; }
+}

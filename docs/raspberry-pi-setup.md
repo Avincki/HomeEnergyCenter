@@ -439,22 +439,57 @@ sudo nano /etc/systemd/system/homeenergycenter.service
 # ... existing User=, Group=, WorkingDirectory=, Environment=EO_CONFIG=... lines ...
 Environment=EO_SSL_KEYFILE=/opt/homecenter/HomeEnergyCenter/homecenter.<your-tailnet>.ts.net.key
 Environment=EO_SSL_CERTFILE=/opt/homecenter/HomeEnergyCenter/homecenter.<your-tailnet>.ts.net.crt
+
+[Install]
+WantedBy=multi-user.target
 ```
 
-Reload and restart:
+> **The `Environment=` lines must live inside `[Service]`, NOT at the end of
+> the file.** If you scroll to the bottom in `nano` and add them there, they
+> end up under `[Install]` instead and systemd silently ignores them — uvicorn
+> then boots without TLS env vars and stays on plain HTTP. The warning shows up
+> in `journalctl` as `Unknown key 'Environment' in section [Install], ignoring`.
+> Catch it immediately with `systemd-analyze verify` (below).
+
+Reload, sanity-check the unit, restart, **and confirm the env vars actually
+reached the process** — the last command is the one that catches the
+`[Install]` mistake above:
 
 ```bash
+sudo systemd-analyze verify /etc/systemd/system/homeenergycenter.service  # prints nothing if OK
 sudo systemctl daemon-reload
 sudo systemctl restart homeenergycenter
-journalctl -u homeenergycenter -n 30 --no-pager
-# look for: "Uvicorn running on https://0.0.0.0:8000"  ← https, not http
+systemctl show homeenergycenter -p Environment
+# expect a single line listing all three: EO_CONFIG=... EO_SSL_KEYFILE=... EO_SSL_CERTFILE=...
+# if only EO_CONFIG is there, your two lines are in the wrong section — fix and reload.
 ```
 
-Verify from your laptop (with Tailscale on):
+Find the uvicorn bind line in the journal. The Etrel poller is chatty at
+startup, so `-n 30` may scroll the bind line out — use `--since` to anchor
+at the restart instead:
 
 ```bash
-curl -sI https://homecenter.<your-tailnet>.ts.net:8000/        # expect HTTP/1.1 200 OK
-curl -sI http://homecenter.<your-tailnet>.ts.net:8000/         # expect connection error — port is HTTPS-only now
+journalctl -u homeenergycenter --since "1 minute ago" --no-pager | grep -i "uvicorn running"
+# expect: Uvicorn running on https://0.0.0.0:8000   ← https, not http
+```
+
+Probe the port directly — most reliable confirmation:
+
+```bash
+curl -kI https://localhost:8000/        # expect HTTP/1.1 405 Method Not Allowed (HEAD blocked, TLS OK)
+curl  -I http://localhost:8000/          # expect "Empty reply from server" — port is HTTPS-only now
+```
+
+> Why 405 and not 200? The dashboard route only allows `GET`, and `curl -I`
+> sends `HEAD`. A 405 response proves uvicorn parsed an HTTPS request and
+> routed it through FastAPI — exactly what you want. If you'd rather see 200,
+> use `curl -kI -X GET https://localhost:8000/`.
+
+Then from your laptop (with Tailscale on):
+
+```bash
+curl -I https://homecenter.<your-tailnet>.ts.net:8000/         # expect 200 or 405 (over real cert)
+curl -I http://homecenter.<your-tailnet>.ts.net:8000/          # expect connection error
 ```
 
 #### 6.5.5 Update the kiosk URL

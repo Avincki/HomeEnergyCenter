@@ -1770,3 +1770,117 @@ to today's edits. Not fixed in this session.
   the regression to a single test that *was* mine. Without that
   step I'd have over-attributed the failure surface and either
   reverted good changes or spent time chasing unrelated bugs.
+
+## 2026-05-14 — PWA-over-HTTPS rollout on the production Pi
+
+Goal: turn the dashboard into a real Android-installable PWA so the
+S25 can launch it fullscreen from the home screen, not as a Chrome
+bookmark. Browser-side bits (manifest + service worker + maskable SVG
+icon, root-scoped routes for `/sw.js` and `/manifest.webmanifest`,
+`<link rel="manifest">` + apple-touch-icon + register script in
+`base.html`) had landed earlier as 17c1ffc on the
+`claude/setup-raspberry-pi-OjAFp` branch. This session merged that to
+`main`, walked the live Pi through tailnet HTTPS + uvicorn TLS, and
+documented the path.
+
+### What landed in the repo
+
+- **`docs/raspberry-pi-setup.md` §6.5** (commit c22ee5c) — six-step
+  walkthrough: tailnet HTTPS toggle, `tailscale cert` + chown, the
+  exact `main.py` edit shown as Before/After, the systemd
+  `Environment=` lines, kiosk URL swap, phone install. Caddy
+  reverse-proxy alternative inline so anyone who'd rather keep the
+  kiosk on plain `http://localhost:8000` has the recipe. After the
+  live rollout, amended §6.5.4 with the verification steps that catch
+  the two pitfalls that bit me (below).
+- **`main.py` TLS wiring** (commit 2967005, 9 lines) — read
+  `EO_SSL_KEYFILE` and `EO_SSL_CERTFILE` from `os.environ`, pass to
+  `uvicorn.run()`. The `or None` idiom (`os.environ.get("X") or None`)
+  turns "set but empty" into `None`, so uvicorn's "either both, or
+  neither" semantics work cleanly — a single code path serves HTTP
+  locally and HTTPS in production based on env, with no config-schema
+  change.
+- **Memory** — updated `infra_tailscale.md` (corrected prod host to
+  `homecenter.tail7b791a.ts.net`, abandoning the 2026-05-05 plan to
+  rename to `energycenter`); added `project_pwa_install_pickup.md` to
+  carry the two outstanding follow-ups (phone install, kiosk URL) +
+  the 2026-08-12 cert-expiry caveat across sessions.
+
+### What's live on the Pi (`homecenter.tail7b791a.ts.net`)
+
+- Tailscale-issued cert at
+  `/opt/homecenter/HomeEnergyCenter/homecenter.tail7b791a.ts.net.{crt,key}`,
+  owned `homecenter:homecenter`, key mode 640, cert mode 644.
+- systemd unit `/etc/systemd/system/homeenergycenter.service` has two
+  new `Environment=` lines inside `[Service]` pointing at the cert.
+- Service running on PID 12635; `curl -kI https://localhost:8000/`
+  returns `HTTP/1.1 405 Method Not Allowed` (TLS handshake good,
+  `HEAD /` not allowed which is correct).
+- User confirmed `https://homecenter.tail7b791a.ts.net:8000/` loads in
+  their PC browser. Paused before installing on the phone or swapping
+  the kiosk URL — see [[project-pwa-install-pickup]].
+
+### Two pitfalls that ate ~20 minutes between them
+
+- **systemd `Environment=` is honoured only in `[Service]`, silently
+  ignored elsewhere.** The user opened the unit, scrolled to the
+  bottom, pasted the two cert-path lines after `WantedBy=multi-user.target`
+  — putting them under `[Install]`. systemd logged
+  `Unknown key 'Environment' in section [Install], ignoring` but the
+  service still started, just with no TLS env, so uvicorn bound on
+  plain HTTP and the browser got `ERR_SSL_PROTOCOL_ERROR`. The
+  diagnostic that nailed it was `journalctl -u homeenergycenter -n 60
+  | tail -40` — the two `[Install]` warnings were the *last* two lines.
+  Added §6.5.4 callout + the `systemd-analyze verify` and
+  `systemctl show -p Environment` verification steps so the next
+  person catches it at write time instead of after a browser error.
+- **`alex` can't `cd /opt/homecenter/HomeEnergyCenter`.** I followed
+  up with "cd into the app dir to chown the cert files" — that
+  failed with `Permission denied` because the homecenter home was
+  created mode 700. The subsequent `chown`/`chmod` then ran against
+  cwd `/home/alex` where the files weren't (the prior `sudo mv` had
+  already moved them). The fix is always absolute paths under
+  `/opt/homecenter/...` prefixed with `sudo` — never `cd` as `alex`.
+  Already obvious in hindsight; the doc happens to be right on this,
+  it was my live troubleshooting that went off-script.
+
+### Reusable nuggets
+
+- **`os.environ.get("X") or None` for "feature flag via env var".**
+  Plain `os.environ.get("X")` returns `""` for unset-then-set-empty,
+  which most APIs treat as "a value, just empty". Passing `""` to
+  uvicorn as `ssl_keyfile` would crash; passing `None` cleanly
+  disables TLS. The `or None` collapses both `unset` and `set-but-empty`
+  to `None`, which lets one code path be HTTP-or-HTTPS purely based on
+  whether the env vars are populated — no boolean toggle, no config
+  schema change, no `if os.environ.get(...) is not None`. Same trick
+  applies any time a kwarg's "absent" sentinel is `None` and you want
+  env-var control without a `config.yaml` flag.
+- **Etrel poller noise scrolls past `journalctl -n 30`.** The Etrel
+  modbus poller dumps ~50 lines per tick at startup (every register
+  value individually). The uvicorn bind line — the one you actually
+  need to find — gets pushed out of any reasonable `-n N` window
+  within seconds. Anchor on time, not line count:
+  `journalctl -u <svc> --since "1 minute ago" | grep -i "uvicorn running"`.
+  Or just stop chasing logs and probe the port: `curl -kI` to localhost
+  is a one-line definitive answer.
+- **`curl -kI` returning 405 is a *success* signal for an HTTPS port
+  probe.** Spent half a beat reading "Method Not Allowed" as a failure
+  before remembering `curl -I` sends `HEAD`, FastAPI route allows only
+  `GET`, and a 405 with `allow: GET` in the headers proves the TLS
+  handshake completed and the request was routed all the way through
+  the framework. If the TLS layer had failed, curl would have errored
+  before getting any HTTP status at all. For future port-probes, 4xx
+  is fine; only "Empty reply" / "Recv failure" means the protocol
+  itself is wrong.
+- **A cert-renewal countdown that lives outside the doc.** Tailscale
+  certs expire in ~90 days and the in-uvicorn setup has no renewer.
+  The doc mentions it once in §6.5.2 ("add a cron every 60 days or
+  use caddy") which is easy to skim past. Wrote it into
+  `project_pwa_install_pickup.md` as an explicit "open caveat" with
+  the absolute date (2026-08-12) so a future session asked "the
+  dashboard is broken" near that date can recognise the symptom
+  immediately instead of redebugging from scratch. Lesson: if a setup
+  step has a future expiry, memory is a better home for the deadline
+  than the doc — the doc is what you read once at setup, memory is
+  what's reviewed every conversation.

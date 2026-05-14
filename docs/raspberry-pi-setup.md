@@ -311,8 +311,9 @@ tailscale ip -4          # the Pi's 100.x.y.z address (e.g. 100.78.17.68)
      `http://homecenter:8000`, or the fully-qualified
      `http://homecenter.<your-tailnet>.ts.net:8000` (best to bookmark — won't
      collide with `.local` mDNS suffixes on other networks).
-3. (Optional) Add it to your home screen: iOS Safari → Share → *Add to Home
-   Screen*; Android Chrome → menu → *Install app*.
+3. (Optional) Add it to your home screen — see §6.5 to install it as a real
+   PWA ("Energy Center" icon, fullscreen, no URL bar). Requires HTTPS, which
+   §6.5 walks through.
 
 ### 6.4 Firewall
 
@@ -323,6 +324,200 @@ turned on `ufw`, allow port 8000 from the LAN and the Tailscale CGNAT range:
 sudo ufw allow from 192.168.129.0/24 to any port 8000 proto tcp
 sudo ufw allow from 100.64.0.0/10   to any port 8000 proto tcp
 ```
+
+### 6.5 Install the dashboard as an app on your phone (PWA over HTTPS)
+
+The dashboard ships with PWA support — a web app manifest
+(`/manifest.webmanifest`), a service worker (`/sw.js`) and a vector icon. Open
+it in Chrome on Android (or Safari on iOS) and pick **Install app** /
+**Add to Home Screen** to get a real fullscreen launcher icon, no browser
+chrome.
+
+**Installability requires a secure context.** Chrome only offers *Install app*
+on `localhost` or over HTTPS. Plain HTTP over a Tailscale IP
+(`http://100.x.y.z:8000`) or MagicDNS short name (`http://homecenter:8000`)
+won't show the prompt. The fix is Tailscale's free per-tailnet HTTPS certs,
+plus a one-time wiring change in `main.py` and the systemd unit.
+
+#### 6.5.1 Enable HTTPS for your tailnet (one-click)
+
+In the Tailscale admin console → **DNS** → **HTTPS Certificates** → **Enable**.
+This is per-tailnet, not per-device; do it from any browser logged into your
+Tailscale account.
+
+#### 6.5.2 Issue a cert for the Pi
+
+On the Pi (as `alex`). The tailnet host name is the fully-qualified
+MagicDNS name — `homecenter.<your-tailnet>.ts.net` — visible in
+`tailscale status --self`:
+
+```bash
+TAILNET_HOST=$(tailscale status --self --json \
+  | python3 -c 'import sys, json; print(json.load(sys.stdin)["Self"]["DNSName"].rstrip("."))')
+echo "$TAILNET_HOST"            # e.g. homecenter.tail7b791a.ts.net
+sudo tailscale cert "$TAILNET_HOST"
+```
+
+`tailscale cert` writes two files in the current directory:
+`<host>.crt` and `<host>.key`. Move them into the app directory and hand them
+to the service account so the running uvicorn can read them:
+
+```bash
+sudo mv "$TAILNET_HOST".crt "$TAILNET_HOST".key \
+  /opt/homecenter/HomeEnergyCenter/
+sudo chown homecenter:homecenter \
+  /opt/homecenter/HomeEnergyCenter/"$TAILNET_HOST".crt \
+  /opt/homecenter/HomeEnergyCenter/"$TAILNET_HOST".key
+sudo chmod 640 /opt/homecenter/HomeEnergyCenter/"$TAILNET_HOST".key
+```
+
+These certs are valid for ~90 days. `tailscaled` renews them automatically the
+next time `tailscale cert` is invoked, which `caddy` (§6.5.5) does on its
+own. With the in-uvicorn setup below there's no automatic renewer, so add a
+cron entry every 60 days — or use caddy.
+
+#### 6.5.3 Point uvicorn at the cert — *exactly what to change in `main.py`*
+
+Today `main.py` calls `uvicorn.run(...)` with `host`, `port` and `log_config`.
+To turn the server into HTTPS you pass two extra keyword arguments to that
+same call: `ssl_keyfile=` and `ssl_certfile=` (paths, not file contents).
+When both are `None`, uvicorn serves plain HTTP — so reading the paths from
+env vars keeps a single code path that's HTTP locally and HTTPS in
+production.
+
+**Before** — the current `uvicorn.run(...)` block at the bottom of `main()`:
+
+```python
+uvicorn.run(
+    "energy_orchestrator.web.app:create_app",
+    factory=True,
+    host=config.web.host,
+    port=config.web.port,
+    log_config=None,  # use the root logger we just configured
+)
+```
+
+**After** — add two `os.environ.get(...)` lookups above it and two kwargs to
+the call:
+
+```python
+# TLS (optional): if EO_SSL_KEYFILE and EO_SSL_CERTFILE point at readable
+# files, uvicorn serves HTTPS on the same host/port; if either is unset or
+# empty it falls back to plain HTTP. Cert paths are per-host (depend on
+# the tailnet name) so they live in the systemd unit, not config.yaml.
+ssl_keyfile = os.environ.get("EO_SSL_KEYFILE") or None
+ssl_certfile = os.environ.get("EO_SSL_CERTFILE") or None
+
+uvicorn.run(
+    "energy_orchestrator.web.app:create_app",
+    factory=True,
+    host=config.web.host,
+    port=config.web.port,
+    log_config=None,  # use the root logger we just configured
+    ssl_keyfile=ssl_keyfile,
+    ssl_certfile=ssl_certfile,
+)
+```
+
+(`os` is already imported at the top of `main.py` — no extra import needed.)
+
+Commit + push that change from your dev machine so the next §9.1 update pulls
+it onto the Pi.
+
+#### 6.5.4 Set the cert paths in the systemd unit
+
+Open the unit and add two `Environment=` lines under `[Service]` (replace the
+tailnet name with yours). Place them next to the existing
+`Environment=EO_CONFIG=...` line:
+
+```bash
+sudo nano /etc/systemd/system/homeenergycenter.service
+```
+
+```ini
+[Service]
+# ... existing User=, Group=, WorkingDirectory=, Environment=EO_CONFIG=... lines ...
+Environment=EO_SSL_KEYFILE=/opt/homecenter/HomeEnergyCenter/homecenter.<your-tailnet>.ts.net.key
+Environment=EO_SSL_CERTFILE=/opt/homecenter/HomeEnergyCenter/homecenter.<your-tailnet>.ts.net.crt
+```
+
+Reload and restart:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart homeenergycenter
+journalctl -u homeenergycenter -n 30 --no-pager
+# look for: "Uvicorn running on https://0.0.0.0:8000"  ← https, not http
+```
+
+Verify from your laptop (with Tailscale on):
+
+```bash
+curl -sI https://homecenter.<your-tailnet>.ts.net:8000/        # expect HTTP/1.1 200 OK
+curl -sI http://homecenter.<your-tailnet>.ts.net:8000/         # expect connection error — port is HTTPS-only now
+```
+
+#### 6.5.5 Update the kiosk URL
+
+The kiosk (§7) was pointing at `http://localhost:8000` — that stops working
+because uvicorn now only speaks TLS on port 8000. Change the kiosk URL to the
+tailnet name so the cert validates (using `https://localhost:8000` works
+network-wise but Chromium would refuse the cert — its CN is the tailnet
+hostname, not `localhost`).
+
+In `~/.config/labwc/autostart` (§7.2a) or `~/.config/wayfire.ini` (§7.2b) or
+the `ExecStart=` of `kiosk.service` (§7.2c), replace `http://localhost:8000`
+with:
+
+```
+https://homecenter.<your-tailnet>.ts.net:8000
+```
+
+This routes the kiosk's browser through the Tailscale interface to the same
+Pi — a tiny detour, but it keeps cert validation strict and avoids fragile
+`--ignore-certificate-errors` flags.
+
+> **Prefer to keep the kiosk on plain HTTP?** Run **Caddy** as a reverse
+> proxy instead: uvicorn stays plaintext on `127.0.0.1:8000` (so the kiosk
+> URL is still `http://localhost:8000`), Caddy terminates TLS on the public
+> interface with the same cert, and Caddy renews the cert via Tailscale for
+> you. In that setup you **revert** the `main.py` change and **drop** the
+> two `EO_SSL_*` env vars — TLS belongs to Caddy, not uvicorn.
+>
+> ```bash
+> sudo apt install -y caddy
+> sudo nano /etc/caddy/Caddyfile
+> ```
+>
+> ```caddy
+> homecenter.<your-tailnet>.ts.net {
+>   tls /opt/homecenter/HomeEnergyCenter/homecenter.<your-tailnet>.ts.net.crt \
+>       /opt/homecenter/HomeEnergyCenter/homecenter.<your-tailnet>.ts.net.key
+>   reverse_proxy 127.0.0.1:8000
+> }
+> ```
+>
+> ```bash
+> sudo systemctl reload caddy
+> ```
+
+#### 6.5.6 Install on your phone
+
+1. Pull the latest commits onto the Pi (the one-shot SSH command in §9.1) so
+   the manifest, service worker and icon are deployed.
+2. On the phone, open
+   **`https://homecenter.<your-tailnet>.ts.net:8000`** in Chrome (Android) or
+   Safari (iOS), with Tailscale VPN **on**.
+3. **Android:** Chrome menu ⋮ → **Install app** → "Energy Center". The icon
+   lands on the home screen; tap it to launch fullscreen, no URL bar.
+4. **iOS:** Safari share sheet → **Add to Home Screen** → name it → **Add**.
+   Same fullscreen behaviour.
+
+> **No "Install app" entry on Android?** Confirm the URL is `https://`
+> (lock icon visible), force-reload the page twice so the service worker
+> registers and activates, and check `chrome://inspect/#service-workers`
+> from desktop Chrome — `sw.js` should show as *activated and running*. If
+> the page still loaded over plain HTTP the prompt will never appear.
 
 ---
 
@@ -579,5 +774,6 @@ Common snags during an update:
   `decision.dry_run: false` in `config.yaml` and `sudo systemctl restart homeenergycenter`.
 - **Update Tailscale:** picks up updates with the rest of the system on
   `sudo apt update && sudo apt upgrade`.
-- **Bookmark on your phone:** `http://homecenter.<your-tailnet>.ts.net:8000` →
-  Add to Home Screen — opens like an app.
+- **Install on your phone (PWA):** once §6.5 is in place, open
+  `https://homecenter.<your-tailnet>.ts.net:8000` and use *Install app*
+  (Android) / *Add to Home Screen* (iOS) — fullscreen icon, no URL bar.

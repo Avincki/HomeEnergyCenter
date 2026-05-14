@@ -43,12 +43,21 @@ def main() -> None:
     # sure both sides see the same path even if cwd differs.
     os.environ["EO_CONFIG"] = str(config_path.resolve())
 
+    # TLS (optional): if EO_SSL_KEYFILE and EO_SSL_CERTFILE point at readable
+    # files, uvicorn serves HTTPS on the same host/port; if either is unset
+    # or empty it falls back to plain HTTP. Cert paths are per-host (depend
+    # on the tailnet name) so they live in the systemd unit, not config.yaml.
+    ssl_keyfile = os.environ.get("EO_SSL_KEYFILE") or None
+    ssl_certfile = os.environ.get("EO_SSL_CERTFILE") or None
+
     uvicorn.run(
         "energy_orchestrator.web.app:create_app",
         factory=True,
         host=config.web.host,
         port=config.web.port,
         log_config=None,  # use the root logger we just configured
+        ssl_keyfile=ssl_keyfile,
+        ssl_certfile=ssl_certfile,
     )
 
 

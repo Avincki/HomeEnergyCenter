@@ -76,3 +76,7 @@ logging:
 web:
   host: 0.0.0.0
   port: 8000
+  # Optional TLS — set both to serve HTTPS (needed for PWA install on phones
+  # over Tailscale). Generate with: sudo tailscale cert <host>.<tailnet>.ts.net
+  # ssl_certfile: certs/homecenter.tail7b791a.ts.net.crt
+  # ssl_keyfile:  certs/homecenter.tail7b791a.ts.net.key

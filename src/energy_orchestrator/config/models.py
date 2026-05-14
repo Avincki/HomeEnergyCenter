@@ -241,6 +241,11 @@ class LoggingConfig(_StrictModel):
 class WebConfig(_StrictModel):
     host: str = "0.0.0.0"
     port: Port = 8000
+    # Optional TLS: when both are set, uvicorn serves HTTPS instead of HTTP.
+    # Needed for PWA installability on phones reached over Tailscale —
+    # `sudo tailscale cert <host>.<tailnet>.ts.net` produces the pair.
+    ssl_certfile: Path | None = None
+    ssl_keyfile: Path | None = None
 
 
 # ----- root --------------------------------------------------------------------

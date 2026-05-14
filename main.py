@@ -43,12 +43,18 @@ def main() -> None:
     # sure both sides see the same path even if cwd differs.
     os.environ["EO_CONFIG"] = str(config_path.resolve())
 
+    ssl_kwargs: dict[str, str] = {}
+    if config.web.ssl_certfile and config.web.ssl_keyfile:
+        ssl_kwargs["ssl_certfile"] = str(config.web.ssl_certfile)
+        ssl_kwargs["ssl_keyfile"] = str(config.web.ssl_keyfile)
+
     uvicorn.run(
         "energy_orchestrator.web.app:create_app",
         factory=True,
         host=config.web.host,
         port=config.web.port,
         log_config=None,  # use the root logger we just configured
+        **ssl_kwargs,
     )
 
 

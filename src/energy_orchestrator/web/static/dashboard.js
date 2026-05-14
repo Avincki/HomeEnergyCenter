@@ -43,6 +43,11 @@
     // sent to /api/{prices,history,solar} and the x-axis bounds in
     // renderCombined / updateChart.
     let viewedDate = startOfLocalDay(new Date());
+    // True while the chart should auto-follow "today" — the default until the
+    // user manually navigates to a past day via prev/next. Flipped back on
+    // when they click Today (or Next back to today). Drives the midnight
+    // rollover in `refreshAll`.
+    let autoTrackToday = true;
     // Polling timer handle so the nav code can pause refreshes when looking
     // at a non-today day (the data is frozen there).
     let pollTimer = null;
@@ -606,6 +611,13 @@
     }
 
     async function refreshAll() {
+        // Midnight rollover: if we're auto-tracking and the wall clock has
+        // moved into a new local day, advance viewedDate before fetching so
+        // the new day's data is requested (and so the x-axis re-bounds).
+        if (autoTrackToday && !isViewingToday()) {
+            viewedDate = startOfLocalDay(new Date());
+            applyNavUi();
+        }
         const urls = buildChartUrls();
         try {
             const [state, history, priceJson, solarJson] = await Promise.all([
@@ -726,6 +738,10 @@
 
     async function navigateTo(newDate) {
         viewedDate = startOfLocalDay(newDate);
+        // Resume midnight auto-rollover only when the destination is today —
+        // a manual jump to a past day means the user wants to stay there
+        // until they click Today (or Next back to today).
+        autoTrackToday = isViewingToday();
         applyNavUi();
         // Polling only makes sense while looking at today — past days are
         // immutable. Stop it explicitly before fetching, then restart only

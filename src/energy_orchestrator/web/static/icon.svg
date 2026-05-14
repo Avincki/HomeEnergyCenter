@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Maskable safe zone: 80% inscribed circle. Bolt sits inside it. -->
+  <rect width="512" height="512" rx="96" fill="#0e1116"/>
+  <path d="M306 64 L132 286 L228 286 L206 448 L380 226 L284 226 Z"
+        fill="#fde047"
+        stroke="#4ade80"
+        stroke-width="8"
+        stroke-linejoin="round"/>
+</svg>

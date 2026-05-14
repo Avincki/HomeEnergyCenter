@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>{% block title %}Energy Orchestrator{% endblock %}</title>
     <link rel="stylesheet" href="{{ url_for('static', path='/style.css') }}">
+    <!-- PWA: makes the dashboard installable on Android/iOS as a standalone app -->
+    <link rel="manifest" href="/manifest.webmanifest">
+    <meta name="theme-color" content="#0e1116">
+    <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+    <link rel="apple-touch-icon" href="/static/icon.svg">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="EnergyCenter">
     {% block extra_head %}{% endblock %}
 </head>
 <body>
@@ -34,5 +42,12 @@
     <footer>
         <small>Belgian dynamic-tariff orchestrator &mdash; sonnenBatterie + HomeWizard + SolarEdge</small>
     </footer>
+    <script>
+        if ("serviceWorker" in navigator) {
+            window.addEventListener("load", function () {
+                navigator.serviceWorker.register("/sw.js").catch(function () {});
+            });
+        }
+    </script>
 </body>
 </html>

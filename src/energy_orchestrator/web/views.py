@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
 
 from energy_orchestrator.config.models import AppConfig
@@ -38,6 +38,7 @@ OverrideDep = Annotated[OverrideController, Depends(get_override_controller)]
 SolarCacheDep = Annotated[SolarCache, Depends(get_solar_cache)]
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
 _templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 
 
@@ -143,6 +144,23 @@ async def logs_page(request: Request) -> HTMLResponse:
 @router.get("/docs", response_class=HTMLResponse)
 async def api_docs(request: Request) -> HTMLResponse:
     return _templates.TemplateResponse(request=request, name="api.html", context={})
+
+
+# PWA: serve the service worker and manifest from the origin root so the
+# SW's default scope ("/") covers the whole dashboard. The files themselves
+# live under /static; these routes are just root-scoped aliases with the
+# correct media types for installability.
+@router.get("/sw.js", include_in_schema=False)
+async def service_worker() -> FileResponse:
+    return FileResponse(_STATIC_DIR / "sw.js", media_type="application/javascript")
+
+
+@router.get("/manifest.webmanifest", include_in_schema=False)
+async def web_manifest() -> FileResponse:
+    return FileResponse(
+        _STATIC_DIR / "manifest.webmanifest",
+        media_type="application/manifest+json",
+    )
 
 
 @router.get("/config", response_class=HTMLResponse)

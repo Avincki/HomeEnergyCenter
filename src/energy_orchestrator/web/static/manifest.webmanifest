@@ -1,0 +1,20 @@
+{
+  "name": "HomeEnergyCenter",
+  "short_name": "EnergyCenter",
+  "description": "Self-hosted Belgian dynamic-tariff orchestrator dashboard.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0e1116",
+  "theme_color": "#0e1116",
+  "lang": "en",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

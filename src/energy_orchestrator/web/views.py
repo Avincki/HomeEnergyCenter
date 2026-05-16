@@ -348,6 +348,7 @@ def _config_view(config: AppConfig) -> dict[str, Any]:
                 "api_key": "***" if config.solar.api_key else None,
                 "damping_morning": config.solar.damping_morning,
                 "damping_evening": config.solar.damping_evening,
+                "calibration_factor": config.solar.calibration_factor,
                 "planes": [
                     {
                         "name": p.name,

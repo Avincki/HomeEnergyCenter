@@ -155,6 +155,7 @@ def form_to_config(
             ),
             "damping_morning": baseline.solar.damping_morning,
             "damping_evening": baseline.solar.damping_evening,
+            "calibration_factor": baseline.solar.calibration_factor,
             "planes": [
                 {
                     "name": p.name,
@@ -358,6 +359,7 @@ def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
             "api_key": _secret_or_none(config.solar.api_key),
             "damping_morning": config.solar.damping_morning,
             "damping_evening": config.solar.damping_evening,
+            "calibration_factor": config.solar.calibration_factor,
             "planes": [
                 {
                     "name": plane.name,

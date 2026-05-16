@@ -192,6 +192,17 @@ class SolarConfig(_StrictModel):
     )
     damping_morning: float = Field(default=0.0, ge=0.0, le=1.0)
     damping_evening: float = Field(default=0.0, ge=0.0, le=1.0)
+    calibration_factor: float = Field(
+        default=1.0,
+        gt=0.0,
+        le=5.0,
+        description=(
+            "Multiplier applied to all Forecast.Solar watts/Wh values at the read "
+            "site. Compensates for the free-tier model's conservative system-loss "
+            "and temperature assumptions, which routinely under-forecast by 20-40% "
+            "on clear days. Tune empirically against measured daily kWh."
+        ),
+    )
 
     @model_validator(mode="after")
     def _at_least_one_plane(self) -> SolarConfig:

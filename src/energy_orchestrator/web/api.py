@@ -583,29 +583,6 @@ async def post_shutdown() -> dict[str, Any]:
     return {"status": "closing kiosk"}
 
 
-@router.post("/etrel/diagnostic-dump", dependencies=[Depends(require_same_origin)])
-async def post_etrel_diagnostic_dump(
-    config: ConfigDep, etrel_client: EtrelClientDep
-) -> dict[str, Any]:
-    """Re-run the Etrel register dump now (input+holding, regs 0..47 + 990..1039).
-
-    Diagnostic for Sonnen Smart-E-Grid behavior: trigger this while the
-    setpoint is clamped (``setpoint_diverged=true`` in the change-event
-    log) and grep the resulting log entry for the float32 column matching
-    the observed ``setpoint_a``. The matching register is where Sonnen's
-    cluster channel writes its limit.
-    """
-    if config.etrel is None:
-        raise HTTPException(status_code=400, detail="Etrel charger is not configured")
-    if etrel_client is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Etrel client unavailable (tick loop not running)",
-        )
-    await etrel_client.force_diagnostic_dump()
-    return {"status": "ok", "message": "diagnostic dump triggered, see log"}
-
-
 @router.post("/etrel/set-current", dependencies=[Depends(require_same_origin)])
 async def post_etrel_set_current(
     body: EtrelSetCurrentRequest,

@@ -808,28 +808,6 @@
         return `Write failed: ${data.write_error || "unknown"} · ${readbackTxt}`;
     }
 
-    function wireEtrelDump() {
-        const btn = document.getElementById("etrel-dump-btn");
-        const status = document.getElementById("etrel-set-current-status");
-        if (!btn) return;
-        btn.addEventListener("click", async () => {
-            btn.disabled = true;
-            if (status) status.textContent = "Dumping…";
-            try {
-                const resp = await fetch("/api/etrel/diagnostic-dump", { method: "POST" });
-                if (!resp.ok) {
-                    const detail = await resp.text();
-                    throw new Error(`HTTP ${resp.status}: ${detail}`);
-                }
-                if (status) status.textContent = "Dumped — see log";
-            } catch (e) {
-                if (status) status.textContent = `Dump failed: ${e.message}`;
-            } finally {
-                btn.disabled = false;
-            }
-        });
-    }
-
     async function init() {
         installDateAdapter();
         const canvas = document.getElementById("mainChart");
@@ -837,7 +815,6 @@
 
         wireChartNav();
         wireEtrelSetCurrent();
-        wireEtrelDump();
 
         const urls = buildChartUrls();
         let prices = [];

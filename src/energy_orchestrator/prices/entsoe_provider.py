@@ -30,6 +30,11 @@ from energy_orchestrator.prices.base import (
 _DEFAULT_BASE_URL = "https://web-api.tp.entsoe.eu/api"
 _DAY_AHEAD_DOC_TYPE = "A44"
 
+# Without this, aiohttp's default 5-minute total timeout lets a hung ENTSO-E
+# response stall the entire tick loop — every read, decision, and actuation
+# is held up until the request gives up. 30 s matches the solar provider.
+_REQUEST_TIMEOUT_S = 30.0
+
 # Bidding-zone EIC codes for areas users typically configure as 2-letter codes.
 # Anything not in this map is passed through verbatim, so users can supply a
 # raw EIC if their area isn't listed.
@@ -83,7 +88,9 @@ class EntsoePriceProvider(PriceProvider):
 
     def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
-            self._session = aiohttp.ClientSession()
+            self._session = aiohttp.ClientSession(
+                timeout=aiohttp.ClientTimeout(total=_REQUEST_TIMEOUT_S)
+            )
         return self._session
 
     async def fetch_prices(self, start: datetime, end: datetime) -> Sequence[PricePoint]:

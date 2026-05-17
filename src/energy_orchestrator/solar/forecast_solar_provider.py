@@ -233,6 +233,13 @@ class ForecastSolarProvider(SolarProvider):
         if not isinstance(watts_raw, dict):
             raise SolarParseError("Forecast.Solar 'result.watts' missing or wrong type")
 
+        # Free-tier Forecast.Solar bakes in pessimistic system-loss and
+        # temperature assumptions that can't be overridden via API params.
+        # We apply a configurable multiplier here at the read site so every
+        # downstream consumer (dashboard chart, day totals, future rules)
+        # sees the corrected value rather than each having to recalibrate.
+        cal = self.config.calibration_factor
+
         points: list[SolarPoint] = []
         for ts_text, w_value in watts_raw.items():
             try:
@@ -242,7 +249,7 @@ class ForecastSolarProvider(SolarProvider):
                     f"Forecast.Solar timestamp not parseable: {ts_text!r}"
                 ) from e
             try:
-                watts = float(w_value)
+                watts = float(w_value) * cal
             except (TypeError, ValueError) as e:
                 raise SolarParseError(
                     f"Forecast.Solar watts value not numeric at {ts_text}: {w_value!r}"
@@ -251,6 +258,10 @@ class ForecastSolarProvider(SolarProvider):
         points.sort(key=lambda p: p.timestamp)
 
         wh_today, wh_tomorrow = self._extract_day_totals(result.get("watt_hours_day"))
+        if wh_today is not None:
+            wh_today *= cal
+        if wh_tomorrow is not None:
+            wh_tomorrow *= cal
 
         message = payload.get("message")
         if isinstance(message, dict):

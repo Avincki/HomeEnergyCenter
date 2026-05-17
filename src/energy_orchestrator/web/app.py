@@ -88,8 +88,8 @@ def create_app(
 ) -> FastAPI:
     resolved_path: Path | None = None
     if config is None:
-        env_path = config_path if config_path is not None else os.environ.get(
-            "EO_CONFIG", "config.yaml"
+        env_path = (
+            config_path if config_path is not None else os.environ.get("EO_CONFIG", "config.yaml")
         )
         resolved_path = Path(env_path).resolve()
         config = load_config(resolved_path)

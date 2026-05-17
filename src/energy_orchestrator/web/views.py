@@ -28,6 +28,7 @@ from energy_orchestrator.web.dependencies import (
     get_override_controller,
     get_solar_cache,
     get_uow,
+    require_same_origin,
 )
 from energy_orchestrator.web.override import OverrideController
 
@@ -179,7 +180,11 @@ async def config_form(
     )
 
 
-@router.post("/config", response_class=HTMLResponse)
+@router.post(
+    "/config",
+    response_class=HTMLResponse,
+    dependencies=[Depends(require_same_origin)],
+)
 async def config_save(
     request: Request,
     config: ConfigDep,
@@ -343,6 +348,7 @@ def _config_view(config: AppConfig) -> dict[str, Any]:
                 "api_key": "***" if config.solar.api_key else None,
                 "damping_morning": config.solar.damping_morning,
                 "damping_evening": config.solar.damping_evening,
+                "calibration_factor": config.solar.calibration_factor,
                 "planes": [
                     {
                         "name": p.name,

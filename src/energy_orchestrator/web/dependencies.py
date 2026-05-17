@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import Request
+from fastapi import HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from energy_orchestrator.config.models import AppConfig
@@ -55,3 +55,30 @@ def get_etrel_client(request: Request) -> EtrelInchClient | None:
     wasn't started (tests). Routes should treat both as a 503-class error.
     """
     return getattr(request.app.state, "etrel_client", None)
+
+
+def require_same_origin(request: Request) -> None:
+    """CSRF guard: reject state-changing requests whose Origin doesn't match
+    the request's own host.
+
+    The web/API has no authentication — anyone on the tailnet can hit it,
+    and so can a malicious page in another browser tab on the same machine
+    (via a cross-site ``<form>`` POST). Modern browsers always set the
+    ``Origin`` header on POST and refuse to let JavaScript forge it across
+    origins, so requiring ``Origin == scheme://host`` rejects every
+    cross-site submission without needing sessions or CSRF tokens.
+
+    Same-origin caveats:
+      * Curl / scripts must set ``Origin`` matching the Host header to call
+        any POST. Documented in the API docs page.
+      * If you ever put this behind a reverse proxy that rewrites Host,
+        switch to checking against a configured allowed-origin list rather
+        than ``request.url.scheme`` + Host header.
+    """
+    origin = request.headers.get("origin")
+    host = request.headers.get("host", "")
+    if not origin or not host:
+        raise HTTPException(status_code=403, detail="missing Origin or Host header")
+    expected = f"{request.url.scheme}://{host}"
+    if origin != expected:
+        raise HTTPException(status_code=403, detail="cross-origin request blocked")

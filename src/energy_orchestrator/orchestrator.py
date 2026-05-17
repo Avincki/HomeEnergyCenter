@@ -80,6 +80,11 @@ _ON_PCT = 100
 _PRICE_PAST_DAYS = timedelta(days=1)
 _PRICE_FUTURE_DAYS = timedelta(days=2)
 
+# Daily cadence for history pruning. Without this, readings/decisions accrue
+# forever — the repositories all expose ``prune()`` but nothing was calling
+# them, so ``storage.history_retention_days`` was effectively ignored.
+_PRUNE_INTERVAL = timedelta(hours=24)
+
 
 class TickLoop:
     """Owns the device clients, price provider, and price cache, and drives
@@ -139,6 +144,9 @@ class TickLoop:
         # next tick", which gives us a decision immediately on startup rather
         # than waiting a full decision_interval_s.
         self._last_decision_at: datetime | None = None
+        # Gates the history-prune step. None means "fire on the next tick";
+        # subsequent prunes are gated by ``_PRUNE_INTERVAL``.
+        self._last_prune_at: datetime | None = None
 
     # ----- lifecycle ----------------------------------------------------------
 
@@ -289,7 +297,44 @@ class TickLoop:
 
             await self._persist(reading, decision)
 
+            if self._should_prune(when):
+                await self._prune_history()
+                self._last_prune_at = when
+
     # ----- helpers ------------------------------------------------------------
+
+    def _should_prune(self, when: datetime) -> bool:
+        if self._last_prune_at is None:
+            return True
+        return (when - self._last_prune_at) >= _PRUNE_INTERVAL
+
+    async def _prune_history(self) -> None:
+        """Delete readings / decisions / price points / solar forecast rows
+        older than ``storage.history_retention_days``.
+
+        Wrapped in a single UoW so the four DELETEs land atomically. Failure
+        is logged and swallowed — pruning is bookkeeping, not load-bearing,
+        and must not be allowed to kill the tick loop.
+        """
+        days = self.config.storage.history_retention_days
+        try:
+            async with UnitOfWork(self._session_factory) as uow:
+                readings = await uow.readings.prune(days)
+                decisions = await uow.decisions.prune(days)
+                prices = await uow.price_points.prune(days)
+                solar = await uow.solar_forecast.prune(days)
+                await uow.commit()
+        except Exception:
+            logger.exception("history prune failed")
+            return
+        logger.info(
+            "history pruned",
+            retention_days=days,
+            readings_deleted=readings,
+            decisions_deleted=decisions,
+            price_points_deleted=prices,
+            solar_forecast_points_deleted=solar,
+        )
 
     def _should_decide(self, when: datetime) -> bool:
         """True on the first tick or when at least ``decision_interval_s``

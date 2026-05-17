@@ -787,22 +787,6 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
                 candidates.append((i, v))
         return candidates
 
-    async def force_diagnostic_dump(self) -> None:
-        """Re-run the input+holding register dump (regs 0..47 and 990..1039).
-
-        Used to find which register Sonnen's port-503 cluster channel writes
-        to — the startup dump only captures values present at boot, but the
-        Sonnen-imposed limit is a runtime value. Trigger this with the
-        clamp active, then grep the log for the float32 column matching
-        the observed ``setpoint_a``: that register pair is the source.
-
-        Acquires the comm lock so the multi-block read can't interleave
-        with the orchestrator's tick.
-        """
-        async with self._comm_lock:
-            self._dump_done = False
-            await self._diagnostic_dump()
-
     async def read_set_current_a(self) -> float:
         """Read the write-side setpoint readback (holding reg 8..9, float32).
 

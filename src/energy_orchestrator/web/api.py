@@ -46,6 +46,7 @@ from energy_orchestrator.web.dependencies import (
     get_price_cache,
     get_solar_cache,
     get_uow,
+    require_same_origin,
 )
 from energy_orchestrator.web.override import OverrideController
 
@@ -489,7 +490,7 @@ async def _tail_log_sse(
     request: Request, log_path: Path, session_started_at: datetime
 ) -> AsyncIterator[str]:
     # Wait for the file to exist (first run before any logs have been written).
-    while not log_path.exists():
+    while not await asyncio.to_thread(log_path.exists):
         if await request.is_disconnected():
             return
         await asyncio.sleep(_POLL_INTERVAL_S)
@@ -510,18 +511,16 @@ async def _tail_log_sse(
 
             # No new data — detect rotation (file shrank or was replaced).
             try:
-                current_size = log_path.stat().st_size
+                current_size = (await asyncio.to_thread(log_path.stat)).st_size
             except FileNotFoundError:
                 current_size = 0
             if current_size < f.tell():
                 await asyncio.to_thread(f.close)
-                while not log_path.exists():
+                while not await asyncio.to_thread(log_path.exists):
                     if await request.is_disconnected():
                         return
                     await asyncio.sleep(_POLL_INTERVAL_S)
-                f = await asyncio.to_thread(
-                    open, log_path, "r", encoding="utf-8", errors="replace"
-                )
+                f = await asyncio.to_thread(open, log_path, "r", encoding="utf-8", errors="replace")
                 continue
 
             await asyncio.sleep(_POLL_INTERVAL_S)
@@ -529,7 +528,7 @@ async def _tail_log_sse(
         await asyncio.to_thread(f.close)
 
 
-@router.post("/source-status/clear-errors")
+@router.post("/source-status/clear-errors", dependencies=[Depends(require_same_origin)])
 async def clear_source_errors(uow: UowDep) -> dict[str, Any]:
     """Null out ``last_error_at`` + ``last_error_message`` on every source row.
 
@@ -543,7 +542,7 @@ async def clear_source_errors(uow: UowDep) -> dict[str, Any]:
     return {"cleared": rows}
 
 
-@router.post("/override")
+@router.post("/override", dependencies=[Depends(require_same_origin)])
 async def post_override(body: OverrideRequest, controller: OverrideDep) -> dict[str, Any]:
     if body.mode is OverrideMode.AUTO and body.minutes is not None:
         raise HTTPException(
@@ -554,7 +553,7 @@ async def post_override(body: OverrideRequest, controller: OverrideDep) -> dict[
     return _override_to_dict(controller)
 
 
-@router.post("/shutdown")
+@router.post("/shutdown", dependencies=[Depends(require_same_origin)])
 async def post_shutdown() -> dict[str, Any]:
     """Close the chromium kiosk and drop back to the desktop session.
 
@@ -582,30 +581,7 @@ async def post_shutdown() -> dict[str, Any]:
     return {"status": "closing kiosk"}
 
 
-@router.post("/etrel/diagnostic-dump")
-async def post_etrel_diagnostic_dump(
-    config: ConfigDep, etrel_client: EtrelClientDep
-) -> dict[str, Any]:
-    """Re-run the Etrel register dump now (input+holding, regs 0..47 + 990..1039).
-
-    Diagnostic for Sonnen Smart-E-Grid behavior: trigger this while the
-    setpoint is clamped (``setpoint_diverged=true`` in the change-event
-    log) and grep the resulting log entry for the float32 column matching
-    the observed ``setpoint_a``. The matching register is where Sonnen's
-    cluster channel writes its limit.
-    """
-    if config.etrel is None:
-        raise HTTPException(status_code=400, detail="Etrel charger is not configured")
-    if etrel_client is None:
-        raise HTTPException(
-            status_code=503,
-            detail="Etrel client unavailable (tick loop not running)",
-        )
-    await etrel_client.force_diagnostic_dump()
-    return {"status": "ok", "message": "diagnostic dump triggered, see log"}
-
-
-@router.post("/etrel/set-current")
+@router.post("/etrel/set-current", dependencies=[Depends(require_same_origin)])
 async def post_etrel_set_current(
     body: EtrelSetCurrentRequest,
     config: ConfigDep,

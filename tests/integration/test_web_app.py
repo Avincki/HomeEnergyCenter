@@ -61,7 +61,14 @@ def _make_config(tmp_path: Path) -> AppConfig:
 async def client(tmp_path: Path) -> AsyncIterator[AsyncClient]:
     app = create_app(_make_config(tmp_path), start_tick_loop=False)
     transport = ASGITransport(app=app)
-    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+    # Default Origin header so POSTs pass the same-origin CSRF guard; the
+    # check compares Origin to ``{scheme}://{Host header}`` and httpx fills
+    # Host from base_url.
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        headers={"Origin": "http://test"},
+    ) as ac:
         # Trigger the lifespan startup so app.state is populated.
         async with app.router.lifespan_context(app):
             yield ac

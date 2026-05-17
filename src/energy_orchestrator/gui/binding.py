@@ -143,18 +143,6 @@ def form_to_config(
     elif not str(et.get("host", "")).strip():
         nested["etrel"] = None
 
-    # Preserve YAML-only ``web.ssl_certfile`` / ``web.ssl_keyfile`` through
-    # web-form saves — the form doesn't render those fields, so they'd
-    # otherwise silently fall back to None and drop HTTPS on the next start.
-    if baseline is not None:
-        web = nested.setdefault("web", {})
-        if isinstance(web, dict):
-            for ssl_key in ("ssl_certfile", "ssl_keyfile"):
-                if ssl_key not in web:
-                    val = getattr(baseline.web, ssl_key, None)
-                    if val is not None:
-                        web[ssl_key] = str(val)
-
     if baseline is not None and baseline.solar is not None and "solar" not in nested:
         # Preserve the YAML-only solar section through web-form saves.
         nested["solar"] = {
@@ -167,6 +155,7 @@ def form_to_config(
             ),
             "damping_morning": baseline.solar.damping_morning,
             "damping_evening": baseline.solar.damping_evening,
+            "calibration_factor": baseline.solar.calibration_factor,
             "planes": [
                 {
                     "name": p.name,
@@ -370,6 +359,7 @@ def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
             "api_key": _secret_or_none(config.solar.api_key),
             "damping_morning": config.solar.damping_morning,
             "damping_evening": config.solar.damping_evening,
+            "calibration_factor": config.solar.calibration_factor,
             "planes": [
                 {
                     "name": plane.name,

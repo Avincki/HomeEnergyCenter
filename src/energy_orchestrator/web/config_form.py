@@ -150,9 +150,7 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                         "prices.area",
                         hint="2-letter code (BE/NL/DE/FR/AT/LU) or raw EIC",
                     ),
-                    WebField(
-                        "CSV path", "prices.csv_path", hint="only when provider=csv"
-                    ),
+                    WebField("CSV path", "prices.csv_path", hint="only when provider=csv"),
                     WebField(
                         "Base URL",
                         "prices.base_url",

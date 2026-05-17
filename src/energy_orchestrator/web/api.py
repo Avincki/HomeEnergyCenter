@@ -490,7 +490,7 @@ async def _tail_log_sse(
     request: Request, log_path: Path, session_started_at: datetime
 ) -> AsyncIterator[str]:
     # Wait for the file to exist (first run before any logs have been written).
-    while not log_path.exists():
+    while not await asyncio.to_thread(log_path.exists):
         if await request.is_disconnected():
             return
         await asyncio.sleep(_POLL_INTERVAL_S)
@@ -511,18 +511,16 @@ async def _tail_log_sse(
 
             # No new data — detect rotation (file shrank or was replaced).
             try:
-                current_size = log_path.stat().st_size
+                current_size = (await asyncio.to_thread(log_path.stat)).st_size
             except FileNotFoundError:
                 current_size = 0
             if current_size < f.tell():
                 await asyncio.to_thread(f.close)
-                while not log_path.exists():
+                while not await asyncio.to_thread(log_path.exists):
                     if await request.is_disconnected():
                         return
                     await asyncio.sleep(_POLL_INTERVAL_S)
-                f = await asyncio.to_thread(
-                    open, log_path, "r", encoding="utf-8", errors="replace"
-                )
+                f = await asyncio.to_thread(open, log_path, "r", encoding="utf-8", errors="replace")
                 continue
 
             await asyncio.sleep(_POLL_INTERVAL_S)

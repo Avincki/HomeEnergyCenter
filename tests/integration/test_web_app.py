@@ -85,6 +85,8 @@ async def test_state_empty_when_no_data(client: AsyncClient) -> None:
     assert body["decision"] is None
     assert body["sources"] == []
     assert body["override"]["mode"] == "auto"
+    # Charger control is inactive (no tick loop in tests) -> null, key present.
+    assert body["charger"] is None
 
 
 async def test_state_returns_latest_after_inserts(client: AsyncClient) -> None:

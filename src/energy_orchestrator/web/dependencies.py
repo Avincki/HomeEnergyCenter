@@ -7,6 +7,7 @@ handler stashed it during startup. Routes consume them via ``Depends(...)``.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from fastapi import HTTPException, Request
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -55,6 +56,16 @@ def get_etrel_client(request: Request) -> EtrelInchClient | None:
     wasn't started (tests). Routes should treat both as a 503-class error.
     """
     return getattr(request.app.state, "etrel_client", None)
+
+
+def get_charger_status(request: Request) -> dict[str, Any] | None:
+    """Return the latest charger-control decision, or ``None``.
+
+    ``None`` covers charger control being inactive, the tick loop not running
+    (tests), or no decision having been made yet.
+    """
+    loop = getattr(request.app.state, "tick_loop", None)
+    return loop.charger_status if loop is not None else None
 
 
 def require_same_origin(request: Request) -> None:

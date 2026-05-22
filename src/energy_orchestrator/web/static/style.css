@@ -163,6 +163,22 @@ section h2 {
     letter-spacing: 0.05em;
 }
 
+/* "dry-run" pill on the charger-control tile — the charger is deciding but not
+   writing. Amber to read as advisory, not active. */
+.charger-badge {
+    display: inline-block;
+    background: var(--warn);
+    color: #000;
+    font-size: 0.6rem;
+    padding: 0.1rem 0.4rem;
+    border-radius: 3px;
+    margin-left: 0.4rem;
+    text-transform: uppercase;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    vertical-align: middle;
+}
+
 .tiles {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

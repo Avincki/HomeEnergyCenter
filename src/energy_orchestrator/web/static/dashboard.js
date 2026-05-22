@@ -241,6 +241,25 @@
             etrel.custom_max_a != null ? Math.round(etrel.custom_max_a) : "—");
     }
 
+    // Charger-control decision tile: the rule engine's latest charger command
+    // (target current or "Paused") plus the reason and decision time. Hidden
+    // when charger control is inactive (state.charger is null). A "dry-run"
+    // badge shows while it logs decisions without writing to the charger.
+    function applyChargerControlTile(state) {
+        const tile = document.getElementById("tile-charger-control");
+        if (!tile) return;
+        const c = state && state.charger;
+        if (!c) { tile.hidden = true; return; }
+        tile.hidden = false;
+        const target = c.paused
+            ? "Paused"
+            : (c.target_a != null ? `${c.target_a.toFixed(0)} A` : "—");
+        setText("tile-charger-target", target);
+        const when = c.timestamp ? ` · ${fmtTimeShort(c.timestamp)}` : "";
+        setText("tile-charger-reason", (c.reason || "—") + when);
+        setHidden("charger-dry-run", !c.dry_run);
+    }
+
     function buildChartData(prices, readings, solarPoints) {
         // Bars plot |price| so negative hours rise from zero like positive
         // ones; sign is conveyed by colour (red = positive, green = negative).
@@ -518,6 +537,7 @@
         setText("tile-house", fmtInt(reading.house_consumption_w, " W"));
         applyChargerTile(state, reading);
         applyEtrelStateLine(state);
+        applyChargerControlTile(state);
         applySolarTile(reading.small_solar_w, reading.large_solar_w);
         setText("tile-grid", fmtInt(neg(reading.grid_feed_in_w), " W"));
 

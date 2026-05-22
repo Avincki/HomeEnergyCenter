@@ -41,6 +41,7 @@ from energy_orchestrator.devices.etrel import EtrelInchClient
 from energy_orchestrator.prices import PriceCache
 from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.web.dependencies import (
+    get_charger_status,
     get_config,
     get_etrel_client,
     get_override_controller,
@@ -57,6 +58,7 @@ OverrideDep = Annotated[OverrideController, Depends(get_override_controller)]
 PriceCacheDep = Annotated[PriceCache, Depends(get_price_cache)]
 SolarCacheDep = Annotated[SolarCache, Depends(get_solar_cache)]
 EtrelClientDep = Annotated[EtrelInchClient | None, Depends(get_etrel_client)]
+ChargerStatusDep = Annotated[dict[str, Any] | None, Depends(get_charger_status)]
 
 router = APIRouter(prefix="/api")
 
@@ -217,6 +219,7 @@ def _classify_source_status(s: SourceStatus, now: datetime) -> str:
 async def get_state(
     uow: UowDep,
     controller: OverrideDep,
+    charger: ChargerStatusDep,
 ) -> dict[str, Any]:
     async with uow:
         latest_reading = await uow.readings.latest()
@@ -227,6 +230,7 @@ async def get_state(
         "decision": _decision_to_dict(latest_decision),
         "override": _override_to_dict(controller),
         "sources": [_source_to_dict(s) for s in sources],
+        "charger": charger,
     }
 
 

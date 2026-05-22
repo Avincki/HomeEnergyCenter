@@ -167,6 +167,9 @@ class TickLoop:
                 "charger_control.enabled but inactive: needs both an 'etrel' "
                 "device and 'solar' (lat/lon for sunrise/sunset) configured"
             )
+        # Latest charger decision, exposed to the dashboard via /api/state. None
+        # until the first decision tick (or when charger control is inactive).
+        self._charger_status: dict[str, Any] | None = None
 
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -195,6 +198,14 @@ class TickLoop:
         if not isinstance(self._etrel, EtrelInchClient):
             return None
         return self._etrel
+
+    @property
+    def charger_status(self) -> dict[str, Any] | None:
+        """Latest charger-control decision, for the dashboard tile.
+
+        ``None`` when charger control is inactive or hasn't decided yet.
+        """
+        return self._charger_status
 
     async def start(self) -> None:
         if self._task is not None:
@@ -563,6 +574,13 @@ class TickLoop:
             battery_power_w=float(batt),
         )
         command = self._charger.decide(inputs)
+        self._charger_status = {
+            "timestamp": when.isoformat(),
+            "target_a": command.target_a,
+            "paused": command.paused,
+            "reason": command.reason,
+            "dry_run": self.config.charger_control.dry_run,
+        }
         logger.info(
             "charger control decision",
             target_a=command.target_a,

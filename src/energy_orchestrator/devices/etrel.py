@@ -581,7 +581,11 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
             or set_current_changed
             or diverged_changed
         ):
-            event = "etrel state observed (first read)" if first_observation else "etrel state changed"
+            event = (
+                "etrel state observed (first read)"
+                if first_observation
+                else "etrel state changed"
+            )
             logger.info(
                 event,
                 status_prev=(

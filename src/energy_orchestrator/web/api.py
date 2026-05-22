@@ -12,6 +12,7 @@ Endpoints (all under ``/api``):
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import subprocess
 import sys
@@ -62,6 +63,11 @@ router = APIRouter(prefix="/api")
 # How recently a successful read counts as "OK" before it degrades to STALE.
 _OK_THRESHOLD = timedelta(minutes=5)
 _DEGRADED_THRESHOLD = timedelta(minutes=30)
+
+# Strong references to fire-and-forget background tasks. asyncio keeps only a
+# weak reference to a bare ``create_task`` result, so without this the task can
+# be garbage-collected before it runs (RUF006); the done-callback drops it.
+_background_tasks: set[asyncio.Task[Any]] = set()
 
 
 def _local_day_window(date_str: str) -> tuple[datetime, datetime]:
@@ -567,17 +573,21 @@ async def post_shutdown() -> dict[str, Any]:
     async def _close_kiosk() -> None:
         await asyncio.sleep(0.5)
         if sys.platform.startswith("linux"):
-            try:
-                subprocess.run(  # noqa: S603,S607
-                    ["pkill", "-f", "chromium"],
+            # Non-blocking subprocess so the event loop isn't stalled
+            # (ASYNC221); suppress FileNotFoundError when pkill is absent.
+            with contextlib.suppress(FileNotFoundError):
+                proc = await asyncio.create_subprocess_exec(
+                    "pkill",
+                    "-f",
+                    "chromium",
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
-                    check=False,
                 )
-            except FileNotFoundError:
-                pass
+                await proc.wait()
 
-    asyncio.create_task(_close_kiosk())
+    task = asyncio.create_task(_close_kiosk())
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
     return {"status": "closing kiosk"}
 
 

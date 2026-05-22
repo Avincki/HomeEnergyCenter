@@ -129,18 +129,14 @@ def form_to_config(
     hw = nested.get("homewizard")
     if isinstance(hw, dict):
         ls = hw.get("large_solar")
-        if not isinstance(ls, dict):
-            hw["large_solar"] = None
-        elif not str(ls.get("host", "")).strip():
+        if not isinstance(ls, dict) or not str(ls.get("host", "")).strip():
             hw["large_solar"] = None
 
     # Same treatment for the optional top-level ``etrel`` section: blank host
     # means "disabled". Set to None so AppConfig.etrel falls back to its
     # default rather than failing host validation on the empty string.
     et = nested.get("etrel")
-    if not isinstance(et, dict):
-        nested["etrel"] = None
-    elif not str(et.get("host", "")).strip():
+    if not isinstance(et, dict) or not str(et.get("host", "")).strip():
         nested["etrel"] = None
 
     if baseline is not None and baseline.solar is not None and "solar" not in nested:

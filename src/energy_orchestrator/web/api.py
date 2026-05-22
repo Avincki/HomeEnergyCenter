@@ -391,8 +391,7 @@ async def get_solar(
                 {"timestamp": _iso_utc(r.timestamp), "watts": r.watts}
             )
         points = [
-            {"timestamp": _iso_utc(ts), "watts": watts}
-            for ts, watts in sorted(summed.items())
+            {"timestamp": _iso_utc(ts), "watts": watts} for ts, watts in sorted(summed.items())
         ]
         return {
             "last_refresh": None,

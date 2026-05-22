@@ -222,17 +222,13 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
                 raise DeviceTimeoutError(f"Etrel connect timed out at {self._endpoint}") from e
             except ModbusException as e:
                 await self._drop_connection()
-                raise DeviceConnectionError(
-                    f"Etrel connect failed at {self._endpoint}: {e}"
-                ) from e
+                raise DeviceConnectionError(f"Etrel connect failed at {self._endpoint}: {e}") from e
             if not ok:
                 await self._drop_connection()
                 raise DeviceConnectionError(f"Etrel could not connect at {self._endpoint}")
         return self._client
 
-    async def _read(
-        self, fc: str, address: int, count: int, *, label: str
-    ) -> list[int]:
+    async def _read(self, fc: str, address: int, count: int, *, label: str) -> list[int]:
         """One Modbus read with structured failure logs.
 
         ``fc`` is "input" (FC 0x04 — read-only telemetry) or "holding" (FC
@@ -553,9 +549,7 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         # Render the candidate list as ``[(addr, val), …]`` for log
         # readability — addresses are what we ultimately want to lock onto.
         cluster_repr = (
-            [{"reg": a, "value": v} for a, v in cluster_candidates]
-            if cluster_candidates
-            else None
+            [{"reg": a, "value": v} for a, v in cluster_candidates] if cluster_candidates else None
         )
 
         # DEBUG snapshot every tick — opt-in for users tracing minute-by-minute
@@ -582,14 +576,13 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
             or diverged_changed
         ):
             event = (
-                "etrel state observed (first read)"
-                if first_observation
-                else "etrel state changed"
+                "etrel state observed (first read)" if first_observation else "etrel state changed"
             )
             logger.info(
                 event,
                 status_prev=(
-                    None if self._prev_status_code is None
+                    None
+                    if self._prev_status_code is None
                     else _status_label(self._prev_status_code)
                 ),
                 status=_status_label(status_code),
@@ -753,9 +746,7 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
             word_order=self._word_order,
         )
 
-    async def _scan_holding_for_target(
-        self, target_a: float
-    ) -> list[tuple[int, float]]:
+    async def _scan_holding_for_target(self, target_a: float) -> list[tuple[int, float]]:
         """Find holding-register pairs whose float32 decode is near ``target_a``.
 
         Used to identify which register Sonnen's port-503 cluster channel
@@ -774,9 +765,7 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         diagnostic, not part of the critical tick path.
         """
         try:
-            regs = await self._read(
-                _FC_HOLDING, 0, _CLUSTER_SCAN_SPAN, label="cluster_scan"
-            )
+            regs = await self._read(_FC_HOLDING, 0, _CLUSTER_SCAN_SPAN, label="cluster_scan")
         except DeviceError:
             return []
         candidates: list[tuple[int, float]] = []

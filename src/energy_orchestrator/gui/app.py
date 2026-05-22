@@ -214,9 +214,7 @@ class ConfigEditorApp:
             large_solar_probe_factory,
         )
         self._add_device_section(tab, "SolarEdge", _SOLAREDGE_FIELDS, solaredge_probe_factory)
-        self._add_device_section(
-            tab, "Etrel INCH (optional)", _ETREL_FIELDS, etrel_probe_factory
-        )
+        self._add_device_section(tab, "Etrel INCH (optional)", _ETREL_FIELDS, etrel_probe_factory)
         return tab
 
     def _build_decision_tab(self, parent: ttk.Notebook) -> ttk.Frame:

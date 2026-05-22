@@ -229,14 +229,11 @@ async def test_tick_persists_reading_and_decision(
     assert latest_decision.rule_fired == "positive_injection_price"
     # solar_forecast, large_solar and etrel are conditional on optional config
     # being present — none is configured in this test, so none should appear.
-    expected = (
-        {s.value for s in SourceName}
-        - {
-            SourceName.SOLAR_FORECAST.value,
-            SourceName.LARGE_SOLAR.value,
-            SourceName.ETREL.value,
-        }
-    )
+    expected = {s.value for s in SourceName} - {
+        SourceName.SOLAR_FORECAST.value,
+        SourceName.LARGE_SOLAR.value,
+        SourceName.ETREL.value,
+    }
     assert expected <= set(sources.keys())
 
 

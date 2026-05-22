@@ -464,9 +464,7 @@ async def test_pause_writes_zero_amps(mocker: MockerFixture) -> None:
     behaviour must stay identical so existing diagnostics and write-path
     safety nets still apply."""
     client = EtrelInchClient(_config())
-    set_current = mocker.patch.object(
-        client, "set_charging_current_a", new=AsyncMock()
-    )
+    set_current = mocker.patch.object(client, "set_charging_current_a", new=AsyncMock())
     await client.pause()
     set_current.assert_awaited_once_with(0.0)
 
@@ -475,9 +473,7 @@ async def test_release_writes_requested_amps(mocker: MockerFixture) -> None:
     """``release(amps)`` mirrors ``pause()`` — symmetric naming for rule
     code, no extra logic on the write itself."""
     client = EtrelInchClient(_config())
-    set_current = mocker.patch.object(
-        client, "set_charging_current_a", new=AsyncMock()
-    )
+    set_current = mocker.patch.object(client, "set_charging_current_a", new=AsyncMock())
     await client.release(8.0)
     set_current.assert_awaited_once_with(8.0)
 
@@ -490,8 +486,6 @@ async def test_release_does_not_clamp_amps_caller_owns_safety(
     the rule's bug; the wrapper should still forward verbatim so the
     real failure shows up at the documented choke point."""
     client = EtrelInchClient(_config())
-    set_current = mocker.patch.object(
-        client, "set_charging_current_a", new=AsyncMock()
-    )
+    set_current = mocker.patch.object(client, "set_charging_current_a", new=AsyncMock())
     await client.release(30.0)
     set_current.assert_awaited_once_with(30.0)

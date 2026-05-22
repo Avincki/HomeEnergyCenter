@@ -144,9 +144,7 @@ class ForecastSolarProvider(SolarProvider):
         params: dict[str, str] = {}
         if self.config.damping_morning > 0 or self.config.damping_evening > 0:
             # Combined "damping=morning,evening" syntax is what's documented.
-            params["damping"] = (
-                f"{self.config.damping_morning},{self.config.damping_evening}"
-            )
+            params["damping"] = f"{self.config.damping_morning},{self.config.damping_evening}"
         return params
 
     async def fetch_forecast(self) -> SolarForecast:
@@ -245,9 +243,7 @@ class ForecastSolarProvider(SolarProvider):
             try:
                 local_dt = datetime.strptime(ts_text, "%Y-%m-%d %H:%M:%S").replace(tzinfo=self._tz)
             except ValueError as e:
-                raise SolarParseError(
-                    f"Forecast.Solar timestamp not parseable: {ts_text!r}"
-                ) from e
+                raise SolarParseError(f"Forecast.Solar timestamp not parseable: {ts_text!r}") from e
             try:
                 watts = float(w_value) * cal
             except (TypeError, ValueError) as e:

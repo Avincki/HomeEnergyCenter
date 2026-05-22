@@ -115,9 +115,7 @@ def form_to_config(
     for key, raw_value in form.items():
         value: Any = raw_value
         if value == "" and (
-            key in _SECRET_FIELDS
-            or key in _PATH_FIELDS
-            or key in _OPTIONAL_STRING_FIELDS
+            key in _SECRET_FIELDS or key in _PATH_FIELDS or key in _OPTIONAL_STRING_FIELDS
         ):
             value = None
         _set_nested(nested, key.split("."), value)

@@ -176,9 +176,7 @@ class SolarForecastRepository(BaseRepository[SolarForecastPointRow]):
         result = cast(CursorResult[Any], await self._session.execute(stmt))
         return result.rowcount or 0
 
-    async def between(
-        self, start: datetime, end: datetime
-    ) -> Sequence[SolarForecastPointRow]:
+    async def between(self, start: datetime, end: datetime) -> Sequence[SolarForecastPointRow]:
         stmt = (
             select(SolarForecastPointRow)
             .where(

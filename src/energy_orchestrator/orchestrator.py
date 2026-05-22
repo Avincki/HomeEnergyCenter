@@ -344,9 +344,7 @@ class TickLoop:
         elapsed = (when - self._last_decision_at).total_seconds()
         return elapsed >= self.config.decision_interval_s
 
-    async def _read_optional(
-        self, client: DeviceClient[Any] | None
-    ) -> DeviceReading | None:
+    async def _read_optional(self, client: DeviceClient[Any] | None) -> DeviceReading | None:
         """Same as _read_one but no-ops if the client is unconfigured."""
         if client is None:
             return None
@@ -418,10 +416,7 @@ class TickLoop:
     async def _persist_prices(self, points: Sequence[PricePoint]) -> None:
         if not points:
             return
-        rows = [
-            (p.timestamp, p.consumption_eur_per_kwh, p.injection_eur_per_kwh)
-            for p in points
-        ]
+        rows = [(p.timestamp, p.consumption_eur_per_kwh, p.injection_eur_per_kwh) for p in points]
         try:
             async with UnitOfWork(self._session_factory) as uow:
                 await uow.price_points.upsert_many(rows)
@@ -451,9 +446,7 @@ class TickLoop:
         except Exception:  # never let history bookkeeping kill the tick
             logger.exception("solar-forecast persistence failed")
 
-    def _needs_actuation(
-        self, desired: DecisionState, solar_reading: DeviceReading | None
-    ) -> bool:
+    def _needs_actuation(self, desired: DecisionState, solar_reading: DeviceReading | None) -> bool:
         """True if the inverter's actual active-power-limit register differs
         from the value implied by ``desired``.
 
@@ -554,9 +547,7 @@ class TickLoop:
             large_solar_w=(
                 _as_float(large.data.get("active_power_w")) if large is not None else None
             ),
-            etrel_power_w=(
-                _as_float(etrel.data.get("power_w")) if etrel is not None else None
-            ),
+            etrel_power_w=(_as_float(etrel.data.get("power_w")) if etrel is not None else None),
             injection_price_eur_per_kwh=(
                 price.injection_eur_per_kwh if price is not None else None
             ),

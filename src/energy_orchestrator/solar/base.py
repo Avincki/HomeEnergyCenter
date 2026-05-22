@@ -8,7 +8,7 @@ shared with the dashboard), and an abstract ``SolarProvider``.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from types import TracebackType
@@ -90,7 +90,7 @@ class SolarProvider(ABC):
         await self.close()
 
 
-def sum_planes(per_plane: dict[str, Sequence[SolarPoint]]) -> tuple[SolarPoint, ...]:
+def sum_planes(per_plane: Mapping[str, Sequence[SolarPoint]]) -> tuple[SolarPoint, ...]:
     """Sum watts across planes that share a timestamp.
 
     Planes are expected to align on hourly buckets; mismatches still merge

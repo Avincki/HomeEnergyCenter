@@ -515,9 +515,11 @@ Pi — a tiny detour, but it keeps cert validation strict and avoids fragile
 > **Prefer to keep the kiosk on plain HTTP?** Run **Caddy** as a reverse
 > proxy instead: uvicorn stays plaintext on `127.0.0.1:8000` (so the kiosk
 > URL is still `http://localhost:8000`), Caddy terminates TLS on the public
-> interface with the same cert, and Caddy renews the cert via Tailscale for
-> you. In that setup you **revert** the `main.py` change and **drop** the
-> two `EO_SSL_*` env vars — TLS belongs to Caddy, not uvicorn.
+> interface with the same cert. In that setup you **revert** the `main.py`
+> change and **drop** the two `EO_SSL_*` env vars — TLS belongs to Caddy,
+> not uvicorn. (Cert renewal isn't automatic here — `.ts.net` certs are
+> Tailscale's, not Let's Encrypt's, so Caddy's automatic-HTTPS doesn't apply;
+> see §6.6 for the renewal cron and the multi-app version of this setup.)
 >
 > ```bash
 > sudo apt install -y caddy
@@ -553,6 +555,120 @@ Pi — a tiny detour, but it keeps cert validation strict and avoids fragile
 > registers and activates, and check `chrome://inspect/#service-workers`
 > from desktop Chrome — `sw.js` should show as *activated and running*. If
 > the page still loaded over plain HTTP the prompt will never appear.
+
+### 6.6 Multiple apps behind one Caddy front door (future — not yet deployed)
+
+> **Status: design only.** Today the Pi runs a single app (HomeEnergyCenter)
+> with uvicorn doing its own TLS (§6.5.3–§6.5.4). This section is the plan for
+> when **GeoRiskMonitor** and later **FitnessCoach** join the same Pi. Nothing
+> here is wired up yet — it's here so the layout is decided before the second
+> app lands.
+
+One Tailscale node has **one** name — `homecenter.<your-tailnet>.ts.net` — so
+several apps share it and are told apart by **port**. A single **Caddy**
+process owns TLS for all of them and forwards each public port to a plain-HTTP
+app bound to loopback:
+
+```
+                                       ┌──────────────── Raspberry Pi ────────────────┐
+                                       │  Caddy  (one process — owns all TLS)          │
+ Phone / PC / kiosk ── tailnet ──────▶ │                                               │
+ (Tailscale ON)        tunnel          │   :8000 ─▶ 127.0.0.1:9000   HomeEnergyCenter   │
+   homecenter.<tailnet>.ts.net         │   :8001 ─▶ 127.0.0.1:9001   GeoRiskMonitor     │
+                                       │   :8002 ─▶ 127.0.0.1:9002   FitnessCoach(later)│
+                                       │      ▲                                         │
+                                       │      └─ one Tailscale cert, shared by all      │
+                                       └───────────────────────────────────────────────┘
+
+  public (HTTPS, tailnet-facing)        internal (plain HTTP, loopback only)
+  :8000  HomeEnergyCenter               127.0.0.1:9000
+  :8001  GeoRiskMonitor                 127.0.0.1:9001
+  :8002  FitnessCoach (later)           127.0.0.1:9002
+```
+
+Keeping HomeEnergyCenter on public **:8000** means the phone PWA and the kiosk
+URL (§6.5.5–§6.5.6) **don't change** — only *what answers* on :8000 changes
+(Caddy instead of uvicorn).
+
+**No app code changes.** Each app stays a normal plain-HTTP service; it just
+binds loopback and does *not* terminate TLS:
+
+- **HomeEnergyCenter** — drop the two `EO_SSL_*` env vars from the systemd unit
+  (it falls back to plain HTTP per §6.5.3) and bind `127.0.0.1:9000`.
+- **GeoRiskMonitor / FitnessCoach** — install exactly like §4–§5 (own service
+  user, own venv, own systemd unit), each binding its own `127.0.0.1:900x`.
+
+**Put the shared cert where Caddy can read it.** Caddy runs as the `caddy`
+system user (created by the apt package). Do **not** leave the cert under
+`/opt/homecenter/...` — that home is mode `700`, so the `caddy` user can't even
+traverse into it (this exact permission bit cost time during the first HTTPS
+rollout). Use a neutral dir Caddy owns:
+
+```bash
+sudo apt install -y caddy
+sudo mkdir -p /etc/caddy/certs
+sudo chown caddy:caddy /etc/caddy/certs
+```
+
+**The Caddyfile** — one re-usable TLS snippet, one block per app:
+
+```caddy
+# /etc/caddy/Caddyfile
+(tsnet_tls) {
+    tls /etc/caddy/certs/homecenter.<your-tailnet>.ts.net.crt \
+        /etc/caddy/certs/homecenter.<your-tailnet>.ts.net.key
+}
+
+homecenter.<your-tailnet>.ts.net:8000 {
+    import tsnet_tls
+    reverse_proxy 127.0.0.1:9000          # HomeEnergyCenter
+}
+
+homecenter.<your-tailnet>.ts.net:8001 {
+    import tsnet_tls
+    reverse_proxy 127.0.0.1:9001          # GeoRiskMonitor
+}
+
+homecenter.<your-tailnet>.ts.net:8002 {
+    import tsnet_tls
+    reverse_proxy 127.0.0.1:9002          # FitnessCoach (when it exists)
+}
+```
+
+```bash
+sudo systemctl reload caddy    # graceful — no dropped connections
+```
+
+**Cert renewal.** The `tls <crt> <key>` lines point at the files
+`tailscale cert` wrote, so Caddy *uses* them but does **not** renew them —
+`.ts.net` certs are Tailscale's to issue, not Let's Encrypt's, so Caddy's
+usual automatic-HTTPS doesn't apply. The upside of the single front door:
+the whole Pi now needs only **one** renewal job (not one per app), and it
+**reloads** instead of restarting, so there's no downtime:
+
+```cron
+# /etc/cron.d/tsnet-cert  — runs as root, weekly; tailscale no-ops until due
+SHELL=/bin/bash
+30 4 * * 0 root /usr/bin/tailscale cert \
+  --cert-file /etc/caddy/certs/homecenter.<your-tailnet>.ts.net.crt \
+  --key-file  /etc/caddy/certs/homecenter.<your-tailnet>.ts.net.key \
+  homecenter.<your-tailnet>.ts.net \
+  && chown caddy:caddy /etc/caddy/certs/homecenter.<your-tailnet>.ts.net.crt /etc/caddy/certs/homecenter.<your-tailnet>.ts.net.key \
+  && chmod 640 /etc/caddy/certs/homecenter.<your-tailnet>.ts.net.key \
+  && systemctl reload caddy
+```
+
+For truly cron-free renewal, build Caddy with the
+[`caddy-tailscale`](https://github.com/tailscale/caddy-tailscale) plugin via
+`xcaddy` — then Caddy joins the tailnet and fetches/renews the cert itself.
+That's a custom binary, so it's only worth it once several apps are live.
+
+> **Alternative — path routing instead of ports** (`…/energy`, `…/georisk`,
+> `…/fitness` on a single `:443`, no port numbers in the URL). Prettier, but
+> each app must be told it lives under a sub-path (e.g. FastAPI `root_path`,
+> base-href for static assets) or its links and assets break — that **is** an
+> app change. The port layout above stays the zero-touch option; reach for
+> paths only if an app already supports sub-path serving.
 
 ---
 

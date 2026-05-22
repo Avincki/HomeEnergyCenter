@@ -124,6 +124,11 @@ class FakeSolarEdge(FakeClient):
         if self._raise_on_write is not None:
             raise self._raise_on_write
         self.write_calls.append(value)
+        # Mirror real hardware: the register now reads back what we wrote, so
+        # the loop's self-healing _needs_actuation sees actual == target on the
+        # next tick and won't re-issue an identical write.
+        if self._data is not None:
+            self._data["active_power_limit_pct"] = float(value)
 
 
 class FakeProvider:
@@ -276,7 +281,7 @@ async def test_tick_actuates_solaredge_on_state_change_when_not_dry_run(
     cache = PriceCache()
     loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
-    fake_se = FakeSolarEdge()
+    fake_se = FakeSolarEdge(data={"active_power_limit_pct": 0.0})
     _install_fakes(
         loop,
         sonnen=FakeClient(SourceName.SONNEN, data={"soc_pct": 75.0}),
@@ -288,7 +293,8 @@ async def test_tick_actuates_solaredge_on_state_change_when_not_dry_run(
     )
 
     await loop.tick(now=now)
-    # First tick sees previous_state=None -> state_changed=True -> actuate.
+    # First tick: engine decides ON and the inverter still reads 0 %, so
+    # _needs_actuation issues the write to 100 %.
     assert fake_se.write_calls == [100]
 
 
@@ -421,7 +427,7 @@ async def test_decision_interval_gates_subsequent_ticks(
     config = config.model_copy(update={"decision_interval_s": 60.0})
     cache = PriceCache()
     loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
-    fake_se = FakeSolarEdge()
+    fake_se = FakeSolarEdge(data={"active_power_limit_pct": 0.0})
     # ``recent(hours=...)`` uses datetime.now(UTC) as the cutoff, so anchor the
     # tick timestamps to "now" instead of a fixed historical date. Snap to
     # mid-hour so the +60 s tick stays inside the same UTC hour (otherwise
@@ -444,8 +450,8 @@ async def test_decision_interval_gates_subsequent_ticks(
             r = list(await uow.readings.recent(hours=1))
         return len(d), len(r)
 
-    # First tick: no prior decision -> engine runs, actuator fires (state flip
-    # from None to ON).
+    # First tick: no prior decision -> engine decides ON; inverter reads 0 %, so
+    # _needs_actuation fires the write to 100 %.
     await loop.tick(now=base)
     assert fake_se.write_calls == [100]
     assert await counts() == (1, 1)
@@ -456,8 +462,9 @@ async def test_decision_interval_gates_subsequent_ticks(
     assert fake_se.write_calls == [100]  # unchanged
     assert await counts() == (1, 2)
 
-    # Tick at +60 s — gate elapsed -> engine runs again. State is unchanged
-    # (still ON), so no new actuator write.
+    # Tick at +60 s — gate elapsed -> engine runs again. State is still ON and
+    # the inverter now reads 100 % (written on tick 1), so the self-healing
+    # _needs_actuation issues no new write.
     await loop.tick(now=base + timedelta(seconds=60))
     assert fake_se.write_calls == [100]
     assert await counts() == (2, 3)

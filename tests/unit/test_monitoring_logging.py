@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -11,6 +12,7 @@ import structlog
 
 from energy_orchestrator.config.models import LoggingConfig
 from energy_orchestrator.monitoring import configure_logging
+from energy_orchestrator.utils.clock import LOCAL_TZ
 
 
 def _read_jsonl(path: Path) -> list[dict[str, Any]]:
@@ -54,8 +56,10 @@ def test_log_records_carry_iso_timestamp_and_level(tmp_path: Path) -> None:
     assert rec["level"] == "warning"
     assert rec["code"] == 42
     assert "timestamp" in rec
-    # ISO 8601 UTC suffix.
-    assert rec["timestamp"].endswith("Z") or "+00:00" in rec["timestamp"]
+    # Local (Brussels) ISO timestamp carrying a UTC offset — not UTC "Z".
+    parsed = datetime.fromisoformat(rec["timestamp"])
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == parsed.astimezone(LOCAL_TZ).utcoffset()
 
 
 def test_bound_contextvars_appear_in_records(tmp_path: Path) -> None:

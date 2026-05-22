@@ -26,13 +26,25 @@ import sys
 from pathlib import Path
 
 import structlog
-from structlog.types import Processor
+from structlog.types import EventDict, Processor, WrappedLogger
 
 from energy_orchestrator.config.models import LoggingConfig
+from energy_orchestrator.utils.clock import now_local
 
 _HANDLER_TAG = "_energy_orchestrator_handler"
 _LOG_FILENAME = "energy_orchestrator.log"
 _FILE_MAX_BYTES = 10 * 1024 * 1024  # 10 MiB before rotation
+
+
+def _local_timestamper(_logger: WrappedLogger, _method: str, event_dict: EventDict) -> EventDict:
+    """structlog processor: stamp each event with local-zone ISO time.
+
+    Replaces ``TimeStamper(utc=True)`` so every log line carries Brussels
+    wall-clock time (with UTC offset), matching the rest of the user-facing
+    surface. Internal timestamps stay UTC; only the rendered log is localised.
+    """
+    event_dict["timestamp"] = now_local().isoformat(timespec="milliseconds")
+    return event_dict
 
 
 def configure_logging(config: LoggingConfig) -> None:
@@ -48,7 +60,7 @@ def configure_logging(config: LoggingConfig) -> None:
         structlog.contextvars.merge_contextvars,
         structlog.stdlib.add_log_level,
         structlog.stdlib.add_logger_name,
-        structlog.processors.TimeStamper(fmt="iso", utc=True),
+        _local_timestamper,
         structlog.processors.StackInfoRenderer(),
         structlog.processors.format_exc_info,
     ]

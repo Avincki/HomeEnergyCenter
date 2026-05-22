@@ -99,26 +99,42 @@
 
     function pad2(n) { return String(n).padStart(2, "0"); }
 
+    // Pin displayed timestamps to the install's timezone (Brussels) regardless
+    // of the viewing browser's TZ, so the text times match the server logs.
+    const DISPLAY_TZ = "Europe/Brussels";
+    function tzParts(d) {
+        const parts = new Intl.DateTimeFormat("en-GB", {
+            timeZone: DISPLAY_TZ, hourCycle: "h23",
+            year: "numeric", month: "2-digit", day: "2-digit",
+            hour: "2-digit", minute: "2-digit", second: "2-digit",
+        }).formatToParts(d);
+        const m = {};
+        for (const p of parts) m[p.type] = p.value;
+        return m;
+    }
+
     function fmtTimeFull(iso) {
         if (!iso) return "";
         const d = new Date(iso);
         if (isNaN(d.getTime())) return String(iso);
-        return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())} ` +
-               `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+        const p = tzParts(d);
+        return `${p.year}-${p.month}-${p.day} ${p.hour}:${p.minute}:${p.second}`;
     }
 
     function fmtTimeShort(iso) {
         if (!iso) return "";
         const d = new Date(iso);
         if (isNaN(d.getTime())) return String(iso);
-        return `${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`;
+        const p = tzParts(d);
+        return `${p.hour}:${p.minute}:${p.second}`;
     }
 
     function fmtTimeHM(iso) {
         if (!iso) return "";
         const d = new Date(iso);
         if (isNaN(d.getTime())) return String(iso);
-        return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+        const p = tzParts(d);
+        return `${p.hour}:${p.minute}`;
     }
 
     function escapeHtml(s) {

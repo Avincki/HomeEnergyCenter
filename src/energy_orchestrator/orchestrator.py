@@ -71,6 +71,7 @@ from energy_orchestrator.solar import (
     SolarForecast,
     SolarProvider,
 )
+from energy_orchestrator.utils.clock import to_local
 from energy_orchestrator.web.override import OverrideController
 
 logger = structlog.stdlib.get_logger(__name__)
@@ -254,8 +255,9 @@ class TickLoop:
         when = now or datetime.now(UTC)
 
         # Bind tick_at so every log line emitted during this tick (including
-        # nested helpers) carries the same timestamp.
-        with structlog.contextvars.bound_contextvars(tick_at=when.isoformat()):
+        # nested helpers) carries the same timestamp — rendered in local
+        # (Brussels) time to match the rest of the user-facing surface.
+        with structlog.contextvars.bound_contextvars(tick_at=to_local(when).isoformat()):
             sonnen_r, car_r, p1_r, small_r, solar_r, large_r, etrel_r = await asyncio.gather(
                 self._read_one(self._sonnen),
                 self._read_one(self._car_charger),

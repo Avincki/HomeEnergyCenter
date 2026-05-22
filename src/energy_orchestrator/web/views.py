@@ -20,6 +20,7 @@ from energy_orchestrator.gui.binding import (
     save_with_backup,
 )
 from energy_orchestrator.solar import SolarCache
+from energy_orchestrator.utils.clock import to_local
 from energy_orchestrator.web.api import _classify_source_status
 from energy_orchestrator.web.config_form import SECTIONS
 from energy_orchestrator.web.dependencies import (
@@ -44,16 +45,15 @@ _templates = Jinja2Templates(directory=_TEMPLATES_DIR)
 
 
 def _localtime(dt: datetime | None, fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
-    """Render a stored UTC datetime in the server's local timezone.
+    """Render a stored UTC datetime in the configured local (Brussels) zone.
 
-    SQLite drops tzinfo on round-trip, so naive values arrive here — treat
-    them as UTC. ``astimezone()`` with no argument converts to system-local.
+    SQLite drops tzinfo on round-trip, so naive values arrive here; ``to_local``
+    treats them as UTC before converting. Pinned to the app's display zone
+    rather than system-local, so it's correct regardless of the host's TZ.
     """
     if dt is None:
         return ""
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=UTC)
-    return dt.astimezone().strftime(fmt)
+    return to_local(dt).strftime(fmt)
 
 
 _templates.env.filters["localtime"] = _localtime

@@ -112,6 +112,13 @@ async def debug_board(
         sources_by_name = {s.source_name: s for s in await uow.source_status.all()}
         recent_decisions = list(await uow.decisions.recent(hours=24))
 
+    # Collapse to state transitions only. A Decision row is persisted on every
+    # decision tick (~30-60 s), so the raw 24 h list is dominated by identical
+    # repeats. The engine sets ``state_changed`` exactly when the applied state
+    # differs from the previous decision (see engine.py), so filtering on it
+    # leaves just the ON/OFF transitions — which is all this board needs.
+    decision_changes = [d for d in recent_decisions if d.state_changed]
+
     health_rows = []
     for source in SourceName:
         name = source.value
@@ -129,7 +136,7 @@ async def debug_board(
         name="debug.html",
         context={
             "health_rows": health_rows,
-            "recent_decisions": recent_decisions[-50:],
+            "recent_decisions": decision_changes[-50:],
             "override": _override_summary(controller),
             "config_view": _config_view(config),
             "override_modes": [m.value for m in OverrideMode],

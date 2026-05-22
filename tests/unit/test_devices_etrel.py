@@ -478,14 +478,41 @@ async def test_release_writes_requested_amps(mocker: MockerFixture) -> None:
     set_current.assert_awaited_once_with(8.0)
 
 
-async def test_release_does_not_clamp_amps_caller_owns_safety(
+async def test_release_forwards_verbatim_clamp_is_at_write_boundary(
     mocker: MockerFixture,
 ) -> None:
-    """Per the docstring contract, ``release()`` does not enforce the 16 A
-    cap — that's the API/UI/JS layers' job. If a rule passes 30 A, that's
-    the rule's bug; the wrapper should still forward verbatim so the
-    real failure shows up at the documented choke point."""
+    """``release()`` forwards the requested amps verbatim to
+    ``set_charging_current_a``; the 16 A installation cap is enforced one level
+    down at the device write boundary (see
+    ``test_set_charging_current_clamps_to_installation_max``), not in the
+    wrapper. So 30 A reaches ``set_charging_current_a`` unchanged here."""
     client = EtrelInchClient(_config())
     set_current = mocker.patch.object(client, "set_charging_current_a", new=AsyncMock())
     await client.release(30.0)
     set_current.assert_awaited_once_with(30.0)
+
+
+async def test_set_charging_current_clamps_to_installation_max(mocker: MockerFixture) -> None:
+    """The 16 A installation cap is enforced at the device write boundary, so
+    every write path (rule engine, API, release) is bounded there. A 30 A
+    request is clamped to 16 A on the wire."""
+    mock_cls = mocker.patch("energy_orchestrator.devices.etrel.AsyncModbusTcpClient")
+    from pymodbus.client import AsyncModbusTcpClient as _Real
+
+    mock_cls.DATATYPE = _Real.DATATYPE
+    mock_cls.convert_to_registers = _Real.convert_to_registers
+    mock_cls.convert_from_registers = _Real.convert_from_registers
+    instance = mock_cls.return_value
+    instance.connected = True
+    instance.connect = AsyncMock(return_value=True)
+    instance.write_register = AsyncMock(return_value=_make_response([0]))
+
+    client = EtrelInchClient(_config())
+    await client.set_charging_current_a(30.0)
+
+    # Two FC-0x06 single-register writes (one float32 word each); decode them
+    # back and confirm the wire value was clamped, not the requested 30 A.
+    assert instance.write_register.await_count == 2
+    words = [call.kwargs["value"] for call in instance.write_register.await_args_list]
+    decoded = _Real.convert_from_registers(words, _Real.DATATYPE.FLOAT32, word_order="big")
+    assert decoded == pytest.approx(16.0)

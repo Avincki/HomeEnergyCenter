@@ -235,6 +235,59 @@ class DecisionConfig(_StrictModel):
         return self
 
 
+class ChargerControlConfig(_StrictModel):
+    """Rule-based control of the Etrel EV charger during solar daytime.
+
+    Every threshold is a tuning knob — expected to be adjusted empirically
+    during the live-test window, not in code. See ``decision/charger_control.py``
+    for how they combine.
+    """
+
+    # Master switch. Off => the controller never runs and the charger is left
+    # to manual control (the /etrel/set-current endpoint). Turn on deliberately.
+    enabled: bool = False
+    # Compute + log the decision every tick but do NOT write to the charger.
+    # Lets the behaviour be observed before it actuates. Default true so a fresh
+    # ``enabled`` rollout is read-only until explicitly trusted.
+    dry_run: bool = True
+
+    # Home-battery SoC floor: below this the car must not charge (battery has
+    # priority). Hysteresis re-enables only above floor + hysteresis to stop
+    # boundary flapping.  [TUNABLE]
+    battery_floor_soc_pct: Percent = 30.0
+    battery_floor_hysteresis_pct: float = Field(default=3.0, ge=0.0, le=50.0)
+
+    # Surplus-following dead-band. Up-tick when the available-power signal
+    # exceeds export_threshold; down-tick when *measured* grid import exceeds
+    # import_threshold. Keep their sum > ~700 W so one 3-phase step (~690 W)
+    # can't jump across the band.  [TUNABLE]
+    export_threshold_w: float = Field(default=500.0, ge=0.0)
+    import_threshold_w: float = Field(default=500.0, ge=0.0)
+
+    # Home-battery max discharge power, added as virtual headroom to the
+    # measured export so the car can draw on the battery (down to the SoC
+    # floor), not only on live solar export.  [TUNABLE]
+    battery_max_output_w: float = Field(default=9000.0, gt=0.0)
+
+    # Resume from pause to min_charge_a only when the signal covers that draw,
+    # so resuming doesn't immediately import and flap. ~ min_charge_a x 3 x
+    # 230 V + margin on 3-phase.  [TUNABLE]
+    resume_surplus_threshold_w: float = Field(default=4300.0, ge=0.0)
+
+    # Charge-current envelope and per-decision step. min is the IEC/J1772 floor
+    # (below it the charger pauses); max is the installation hard cap; step is
+    # the ±adjustment per decision tick.  [TUNABLE]
+    min_charge_a: float = Field(default=6.0, ge=0.0, le=16.0)
+    max_charge_a: float = Field(default=16.0, gt=0.0, le=16.0)
+    step_a: float = Field(default=1.0, gt=0.0, le=16.0)
+
+    @model_validator(mode="after")
+    def _envelope_consistent(self) -> ChargerControlConfig:
+        if self.min_charge_a > self.max_charge_a:
+            raise ValueError("charger_control.min_charge_a must be <= max_charge_a")
+        return self
+
+
 class StorageConfig(_StrictModel):
     sqlite_path: Path = Path("data/orchestrator.db")
     history_retention_days: int = Field(default=90, ge=1)
@@ -273,6 +326,9 @@ class AppConfig(_StrictModel):
     prices: PricesConfig
     solar: SolarConfig | None = None
     decision: DecisionConfig = Field(default_factory=DecisionConfig)
+    # Optional Etrel charger rule-based control. Inert unless ``enabled`` and an
+    # ``etrel`` device + ``solar`` (for sunrise/sunset lat-lon) are configured.
+    charger_control: ChargerControlConfig = Field(default_factory=ChargerControlConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     web: WebConfig = Field(default_factory=WebConfig)

@@ -99,6 +99,12 @@ _IN_CUSTOM_MAX_CURRENT_A = 1028  # float32 (2 regs)
 # Holding register offsets (write-side, also readable for verification).
 _HOLD_SET_CURRENT_A = 8  # float32 (2 regs) — write target
 
+# Installation hard cap on the charging-current setpoint, enforced at the
+# device write boundary so EVERY write path (rule engine, API, pause/release)
+# is bounded here — not only at the API/HTML/JS layers. Once the rule engine
+# became a writer, the API-only cap was no longer sufficient.
+_MAX_CHARGING_CURRENT_A = 16.0
+
 # Plausible L1-voltage envelope used for the endianness sanity check —
 # anything outside is taken as evidence of swapped word order. Float32 with
 # the wrong word order produces values like 1e+38 or 1e-43, which are
@@ -647,10 +653,10 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
         """Resume drawing current at ``amps`` (typically 6-16 A).
 
         Thin wrapper for ``set_charging_current_a`` — symmetrical with
-        ``pause()`` so a rule's pause/release pair reads cleanly. The
-        16 A safety cap is enforced upstream (API endpoint + HTML form
-        + JS check); this method does not re-validate, since the rule
-        engine should be the only caller and is itself bounded.
+        ``pause()`` so a rule's pause/release pair reads cleanly. It forwards
+        verbatim; the 16 A installation cap is enforced at the device write
+        boundary (``_set_charging_current_a_unlocked``), so the rule engine,
+        API, and pause/release are all bounded there.
         """
         await self.set_charging_current_a(amps)
 
@@ -679,11 +685,22 @@ class EtrelInchClient(DeviceClient[EtrelInchConfig]):
 
         Etrel applies the lower of (this setpoint, installer ceiling, EV
         cap). ``0`` pauses the session; values above ``custom_max_a`` are
-        clamped by the charger itself.
+        clamped by the charger itself. We additionally clamp to
+        ``_MAX_CHARGING_CURRENT_A`` here — the single enforcement point for
+        the installation cap across every caller.
         """
+        requested = float(amps)
+        amps = max(0.0, min(requested, _MAX_CHARGING_CURRENT_A))
+        if amps != requested:
+            logger.warning(
+                "etrel set_current clamped to installation limit",
+                requested_a=requested,
+                clamped_a=amps,
+                max_a=_MAX_CHARGING_CURRENT_A,
+            )
         client = await self._ensure_connected()
         regs = AsyncModbusTcpClient.convert_to_registers(
-            float(amps),
+            amps,
             AsyncModbusTcpClient.DATATYPE.FLOAT32,
             word_order=self._word_order,
         )

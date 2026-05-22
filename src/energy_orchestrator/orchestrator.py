@@ -41,6 +41,13 @@ from energy_orchestrator.data.models import (
     SourceName,
 )
 from energy_orchestrator.decision import DecisionEngine, TickContext
+from energy_orchestrator.decision.charger_control import (
+    ATTACHED_CHARGEABLE_STATUS,
+    ChargerCommand,
+    ChargerController,
+    ChargerInputs,
+    is_daytime,
+)
 from energy_orchestrator.decision.forecast import get_current_hour_price
 from energy_orchestrator.devices import (
     DeviceClient,
@@ -71,6 +78,11 @@ logger = structlog.stdlib.get_logger(__name__)
 # SolarEdge active-power-limit values.
 _OFF_PCT = 0
 _ON_PCT = 100
+
+# Charger setpoint self-heal noise floor (amps): only re-write when the live
+# write-side setpoint differs from the desired value by more than this, so a
+# steady command re-asserts at most once instead of every tick.
+_CHARGER_SETPOINT_NOISE_A = 0.1
 
 # Price-fetch window: yesterday + today + tomorrow (UTC). We pull yesterday
 # too because the dashboard renders prices on a local-time x-axis: in any
@@ -137,6 +149,23 @@ class TickLoop:
             ForecastSolarProvider(config.solar) if config.solar is not None else None
         )
         self._engine = DecisionEngine(config.decision)
+        # Optional charger rule-control (separate decision domain from the
+        # inverter engine). Needs the Etrel device (the actuator) and the solar
+        # config (lat/lon for the sunrise/sunset daytime gate). Inert otherwise.
+        self._charger: ChargerController | None = (
+            ChargerController(config.charger_control)
+            if (
+                config.charger_control.enabled
+                and config.etrel is not None
+                and config.solar is not None
+            )
+            else None
+        )
+        if config.charger_control.enabled and self._charger is None:
+            logger.warning(
+                "charger_control.enabled but inactive: needs both an 'etrel' "
+                "device and 'solar' (lat/lon for sunrise/sunset) configured"
+            )
 
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -294,6 +323,13 @@ class TickLoop:
                         record.state, solar_r
                     ):
                         await self._actuate_solaredge(record.state)
+
+                # Charger control is a separate decision domain — it runs on the
+                # same cadence but with its own inputs and skips itself cleanly
+                # when essential readings are missing (so a SoC gap that skips
+                # the inverter decision doesn't block it from a safe pause).
+                if self._charger is not None:
+                    await self._run_charger_control(when, sonnen_r, p1_r, etrel_r)
 
             await self._persist(reading, decision)
 
@@ -482,6 +518,99 @@ class TickLoop:
         await self._record_status_success(
             SourceName.SOLAREDGE, {"active_power_limit_pct": target, "actuated": True}
         )
+
+    async def _run_charger_control(
+        self,
+        when: datetime,
+        sonnen_r: DeviceReading | None,
+        p1_r: DeviceReading | None,
+        etrel_r: DeviceReading | None,
+    ) -> None:
+        """Evaluate the charger controller and (unless dry-run) actuate the Etrel.
+
+        Skips the tick if any essential input is missing rather than forcing a
+        pause on a transient read gap — the self-healing re-assert next tick
+        catches up. SoC, battery power, grid power and charger status are
+        essential; the measured charge current is anti-windup only and may be
+        absent.
+        """
+        if self._charger is None or self.config.solar is None:
+            return
+        soc = sonnen_r.data.get("soc_pct") if sonnen_r is not None else None
+        batt = sonnen_r.data.get("battery_power_w") if sonnen_r is not None else None
+        grid = p1_r.data.get("active_power_w") if p1_r is not None else None
+        status = etrel_r.data.get("status_code") if etrel_r is not None else None
+        if soc is None or batt is None or grid is None or status is None:
+            logger.warning(
+                "charger control skipped: incomplete inputs",
+                have_soc=soc is not None,
+                have_battery_power=batt is not None,
+                have_grid=grid is not None,
+                have_status=status is not None,
+            )
+            return
+        inputs = ChargerInputs(
+            timestamp=when,
+            is_daytime=self._is_daytime(when),
+            car_attached=int(status) in ATTACHED_CHARGEABLE_STATUS,
+            actual_current_a=(
+                _as_float(etrel_r.data.get("current_l1_a")) if etrel_r is not None else None
+            ),
+            battery_soc_pct=float(soc),
+            grid_power_w=float(grid),
+            battery_power_w=float(batt),
+        )
+        command = self._charger.decide(inputs)
+        logger.info(
+            "charger control decision",
+            target_a=command.target_a,
+            paused=command.paused,
+            reason=command.reason,
+            dry_run=self.config.charger_control.dry_run,
+            grid_w=inputs.grid_power_w,
+            battery_w=inputs.battery_power_w,
+            soc_pct=inputs.battery_soc_pct,
+            daytime=inputs.is_daytime,
+            attached=inputs.car_attached,
+        )
+        if self.config.charger_control.dry_run:
+            return
+        await self._actuate_charger(command, etrel_r)
+
+    async def _actuate_charger(
+        self, command: ChargerCommand, etrel_r: DeviceReading | None
+    ) -> None:
+        """Write the charger setpoint, self-healing against drift.
+
+        Writes only when the live write-side setpoint (holding reg 8 readback)
+        differs from the desired value beyond the noise floor, so a steady
+        command re-asserts at most once while an externally-clamped setpoint is
+        corrected each tick. The 16 A installation cap is enforced in the device.
+        Actuation outcome is logged, not recorded on ``SourceStatus`` — that
+        would clobber the Etrel telemetry payload the dashboard tile reads.
+        """
+        client = self.etrel_client
+        if client is None:
+            return
+        desired = command.target_a  # 0.0 == pause
+        live = etrel_r.data.get("set_current_a") if etrel_r is not None else None
+        if live is not None and abs(float(live) - desired) <= _CHARGER_SETPOINT_NOISE_A:
+            return
+        try:
+            await client.set_charging_current_a(desired)
+        except DeviceError as e:
+            logger.warning("charger actuation failed", target_a=desired, error=str(e))
+            return
+        except Exception:  # defensive — never let actuation kill the tick
+            logger.exception("unexpected error actuating charger")
+            return
+        logger.info("charger actuated", target_a=desired, paused=command.paused)
+
+    def _is_daytime(self, when: datetime) -> bool:
+        solar = self.config.solar
+        if solar is None:
+            return False
+        return is_daytime(when, solar.latitude, solar.longitude)
 
     async def _fetch_previous_state(self) -> DecisionState | None:
         async with UnitOfWork(self._session_factory) as uow:

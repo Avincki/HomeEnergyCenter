@@ -231,6 +231,23 @@ def test_taper_floor_decoupled_from_charge_stop_floor() -> None:
     assert aggressive.decide(_inputs(**args)).target_a == 11.0  # bigger reserve -> up-tick
 
 
+def test_charging_battery_still_taps_taper_reserve() -> None:
+    # Unified signal: while the battery is charging only a trickle at a healthy
+    # SoC, the car can still lean on the SoC-tapered reserve and up-tick. (The
+    # old charge/discharge split would have held on the tiny charge power alone.)
+    ctrl = ChargerController(_config())  # taper floor 30
+    ctrl._target_a = 6.0
+    # 52% SoC, battery charging 193 W, no export, car drawing ~6 A:
+    # cap(52) = 9000*(52-30)/70 ~= 2829; reserve = max(0, 2829 - (-193)) ~= 3022
+    # -> well over the 500 W export threshold -> up-tick.
+    cmd = ctrl.decide(
+        _inputs(
+            grid_power_w=0.0, battery_power_w=-193.0, battery_soc_pct=52.0, actual_current_a=6.0
+        )
+    )
+    assert not cmd.paused and cmd.target_a == 7.0
+
+
 # ----- daytime helper ----------------------------------------------------------
 
 

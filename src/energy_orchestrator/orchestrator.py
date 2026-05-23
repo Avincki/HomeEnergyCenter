@@ -85,6 +85,17 @@ _ON_PCT = 100
 # steady command re-asserts at most once instead of every tick.
 _CHARGER_SETPOINT_NOISE_A = 0.1
 
+# Kick-start: when we command a charge current but the EV / Sonnen clamps the
+# active setpoint to ~0 at startup (the connector bounces Reserved <-> Suspended
+# and never draws), a single steady write loses that fight — only repeated
+# re-writes get the session to latch (this is what mashing the manual "Send"
+# button does). We re-assert the setpoint on the poll cadence while a session is
+# stalled, and stop the instant real current flows.
+_CHARGER_KICK_DRAWING_A = 2.0  # measured L1 current at/above which the car is
+# drawing -> session latched -> stop kicking.
+_CHARGER_KICK_MAX_S = 180.0  # give up re-asserting after this long per episode
+# so a genuinely-declining car isn't poked forever.
+
 # Price-fetch window: yesterday + today + tomorrow (UTC). We pull yesterday
 # too because the dashboard renders prices on a local-time x-axis: in any
 # timezone east of UTC, the first hours of "today, local" map to UTC slots
@@ -170,6 +181,11 @@ class TickLoop:
         # Latest charger decision, exposed to the dashboard via /api/state. None
         # until the first decision tick (or when charger control is inactive).
         self._charger_status: dict[str, Any] | None = None
+        # Kick-start episode tracking (see _kick_charger_if_stalled): when the
+        # current stalled-start episode began and whether we've logged giving up
+        # on it. Both reset when the stall clears.
+        self._charger_kick_started_at: datetime | None = None
+        self._charger_kick_gave_up: bool = False
 
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -350,6 +366,11 @@ class TickLoop:
                 # the inverter decision doesn't block it from a safe pause).
                 if self._charger is not None:
                     await self._run_charger_control(when, sonnen_r, p1_r, etrel_r)
+
+            # Kick-start a stalled charge on every poll (not only the 60 s
+            # decision tick): the EV/Sonnen can clamp our setpoint to 0 at
+            # startup, and only repeated re-writes get the session to latch.
+            await self._kick_charger_if_stalled(when, etrel_r)
 
             await self._persist(reading, decision)
 
@@ -633,6 +654,68 @@ class TickLoop:
             return
         logger.info("charger actuated", target_a=desired, paused=command.paused)
 
+    async def _kick_charger_if_stalled(self, when: datetime, etrel_r: DeviceReading | None) -> None:
+        """Re-assert the charge setpoint on the poll cadence when a session stalls.
+
+        At startup the EV / Sonnen cluster channel can clamp the active setpoint
+        to ~0 right after we command a current (the connector bounces
+        Reserved <-> Suspended and never draws). A single steady write loses that
+        fight; repeated re-writes win it — which is what mashing the manual
+        "Send" button does. While we're commanding a charge current
+        (``target >= min``) but the car isn't drawing and the active setpoint is
+        clamped below our command, re-write the setpoint every poll to nudge the
+        session into latching, then stop the instant real current flows. Bounded
+        to ``_CHARGER_KICK_MAX_S`` per episode so a genuinely-declining car
+        (scheduled-off, at its limit) isn't poked forever; the window resets when
+        the stall clears.
+        """
+        if self._charger is None or self.config.charger_control.dry_run:
+            return
+        desired = self._charger.target_a
+        active = _as_float(etrel_r.data.get("setpoint_a")) if etrel_r is not None else None
+        current = _as_float(etrel_r.data.get("current_l1_a")) if etrel_r is not None else None
+        if not _charger_kick_stalled(
+            desired_a=desired,
+            active_a=active,
+            current_a=current,
+            min_charge_a=self.config.charger_control.min_charge_a,
+        ):
+            self._charger_kick_started_at = None
+            self._charger_kick_gave_up = False
+            return
+        if self._charger_kick_started_at is None:
+            self._charger_kick_started_at = when
+        elapsed = (when - self._charger_kick_started_at).total_seconds()
+        if elapsed > _CHARGER_KICK_MAX_S:
+            if not self._charger_kick_gave_up:
+                self._charger_kick_gave_up = True
+                logger.warning(
+                    "charger kick-start gave up — car still not drawing",
+                    target_a=desired,
+                    active_a=active,
+                    current_a=current,
+                    elapsed_s=round(elapsed, 1),
+                )
+            return
+        client = self.etrel_client
+        if client is None:
+            return
+        try:
+            await client.set_charging_current_a(desired)
+        except DeviceError as e:
+            logger.warning("charger kick-start write failed", target_a=desired, error=str(e))
+            return
+        except Exception:  # defensive — never let a kick write kill the tick
+            logger.exception("unexpected error kicking charger")
+            return
+        logger.info(
+            "charger kick-start re-asserted",
+            target_a=desired,
+            active_a=active,
+            current_a=current,
+            elapsed_s=round(elapsed, 1),
+        )
+
     def _is_daytime(self, when: datetime) -> bool:
         solar = self.config.solar
         if solar is None:
@@ -738,6 +821,28 @@ def _as_float(value: Any) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _charger_kick_stalled(
+    *,
+    desired_a: float,
+    active_a: float | None,
+    current_a: float | None,
+    min_charge_a: float,
+) -> bool:
+    """True when we're commanding a charge current but the session has stalled.
+
+    "Stalled" = the controller wants to charge (``desired_a >= min_charge_a``),
+    the car isn't actually drawing (measured current below
+    ``_CHARGER_KICK_DRAWING_A``), and the active setpoint is clamped below our
+    command (the EV / Sonnen holding it down). Missing telemetry (``None``)
+    counts as "not stalled" so we never kick blind.
+    """
+    if desired_a < min_charge_a:
+        return False
+    drawing = current_a is not None and current_a >= _CHARGER_KICK_DRAWING_A
+    clamped = active_a is not None and active_a < desired_a - _CHARGER_SETPOINT_NOISE_A
+    return clamped and not drawing
 
 
 __all__ = ["TickLoop"]

@@ -36,7 +36,7 @@ from energy_orchestrator.data import (
 )
 from energy_orchestrator.devices import DeviceReading
 from energy_orchestrator.devices.errors import DeviceConnectionError
-from energy_orchestrator.orchestrator import TickLoop
+from energy_orchestrator.orchestrator import TickLoop, _charger_kick_stalled
 from energy_orchestrator.prices import PriceCache, PriceFetchError, PricePoint
 from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.web.override import OverrideController
@@ -182,6 +182,19 @@ def _hour_price(when: datetime, *, injection: float, consumption: float = 0.20) 
 
 
 # ----- tests ------------------------------------------------------------------
+
+
+def test_charger_kick_stalled_detects_clamped_idle() -> None:
+    # Commanding 6 A, active setpoint clamped to 0, car not drawing -> stalled.
+    assert _charger_kick_stalled(desired_a=6.0, active_a=0.0, current_a=0.0, min_charge_a=6.0)
+    # Car actually drawing -> session latched -> not stalled.
+    assert not _charger_kick_stalled(desired_a=6.0, active_a=0.0, current_a=6.0, min_charge_a=6.0)
+    # Active setpoint matches our command (not clamped) -> not stalled.
+    assert not _charger_kick_stalled(desired_a=6.0, active_a=6.0, current_a=0.0, min_charge_a=6.0)
+    # Not commanding a charge (paused / below min) -> not stalled.
+    assert not _charger_kick_stalled(desired_a=0.0, active_a=0.0, current_a=0.0, min_charge_a=6.0)
+    # Missing telemetry -> don't kick blind.
+    assert not _charger_kick_stalled(desired_a=6.0, active_a=None, current_a=None, min_charge_a=6.0)
 
 
 async def test_tick_persists_reading_and_decision(

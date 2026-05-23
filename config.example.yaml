@@ -64,6 +64,21 @@ decision:
   forecast_horizon_h: 12
   dry_run: true          # actuator writes are suppressed while true
 
+# charger_control:                # rule-based Etrel EV-charger control, solar daytime only
+#   enabled: false                # master switch (needs the etrel + solar sections to actually run)
+#   dry_run: true                 # compute + log decisions, but don't write to the charger
+#   battery_floor_soc_pct: 30     # charge-stop gate: below this the home battery has priority
+#   battery_floor_hysteresis_pct: 3
+#   export_threshold_w: 500       # up-tick the current when the available-power signal exceeds this
+#   import_threshold_w: 500       # down-tick on real grid import OR battery over-discharge past its cap
+#   battery_max_output_w: 9000    # battery discharge the car may lean on (tapered down by SoC)
+#   taper_floor_soc_pct: 30       # SoC where the battery's signal contribution tapers to 0; separate
+#                                 # from the charge-stop floor (lower = lean harder on the battery)
+#   resume_surplus_threshold_w: 4300   # resume from pause only when the signal covers the min draw
+#   min_charge_a: 6               # below this the charger pauses
+#   max_charge_a: 16              # installation hard cap (<= 16 A)
+#   step_a: 1                     # +/- adjustment per decision tick
+
 storage:
   sqlite_path: data/orchestrator.db
   history_retention_days: 90

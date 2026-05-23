@@ -1884,3 +1884,128 @@ documented the path.
   step has a future expiry, memory is a better home for the deadline
   than the doc — the doc is what you read once at setup, memory is
   what's reviewed every conversation.
+
+## 2026-05-23 — Etrel charger control: rule tuning, hot config reload, decision feed, and a clean self-limiting signal
+
+Long session iterating on the rule-based Etrel EV-charger control that landed
+earlier (commit `2fd5834`). Started with cosmetics and descriptive rule text,
+ended with a materially better control law: one self-limiting available-power
+signal with a symmetric up/down-tick around the SoC-tapered battery cap. **312
+tests pass; ruff/black/mypy clean** throughout. Commits this session include
+`e17a7e2` (taper-floor config), `544cc9b` (unified signal), `9642110`
+(over-discharge down-tick), `ae6aa0f` (trigger thresholds in hold reasons), plus
+`95a9ed0` (ssh `.local` troubleshooting row) and the pre-compaction batch.
+
+### The charger control law, as it stands now
+
+`decision/charger_control.py` — stateful integral controller (`_target_a`
+accumulator + SoC-floor hysteresis latch). Per decision tick (60 s):
+
+- **Eligibility gates** (any failure parks the car at 0 A): solar daytime, a
+  chargeable car attached, battery SoC above `battery_floor_soc_pct`.
+  `ATTACHED_CHARGEABLE_STATUS = {1,2,3,4,5,6}` — this Sonnen-managed firmware
+  parks an idle plugged-in car in 6=Reserved and cycles through 5=Finishing, so
+  both count; only 0/7/8 mean "no car".
+- **Available-power signal** (the big change): one formula regardless of battery
+  direction — `signal = grid export + max(0, tapered_cap - battery_power)`, with
+  `battery_power` signed (+ discharging, − charging) and `tapered_cap =
+  battery_max_output_w * (SoC − taper_floor) / (100 − taper_floor)`. Charging
+  gives `cap + charge` (take the incoming surplus AND lean on the battery),
+  discharging gives `cap − discharge`. Self-limiting: as the car ramps and the
+  battery swings toward discharging the cap, the term → 0.
+- **Up-tick** when signal > `export_threshold_w` AND the car is actually drawing
+  near the command (anti-windup). **Down-tick** on either measured grid import >
+  `import_threshold_w` (hard backstop, takes priority) OR the battery
+  discharging > `import_threshold_w` *past* its tapered cap. Up-tick + the two
+  down-tick triggers make the setpoint converge to "battery discharges ≈ the
+  tapered cap" from either side.
+- Envelope is {0 (pause)} or [`min_charge_a`..`max_charge_a`]; resume from pause
+  needs the signal to cover `resume_surplus_threshold_w`.
+
+### How the control law got here (the seams worth remembering)
+
+1. **The charge/discharge split had a boundary seam.** An earlier design used
+   two regimes (charging → divert charge power; discharging → tapered reserve).
+   At the boundary — battery charging a *trickle* at a healthy SoC — the charging
+   regime only saw the tiny charge power, so the car held instead of leaning on
+   the battery's tapered reserve. Collapsed both back into the single formula
+   (which is also the user's *original* spec). User: "my instruction [to split
+   it] was wrong."
+2. **The down-tick only watched grid import.** When a big house load is covered
+   by the *battery* (not the grid), import stays ~0 while the battery drains hard
+   — and the setpoint just held. Added the symmetric over-discharge down-tick
+   (battery discharging past its cap), the mirror of the up-tick.
+3. **A diverging up-tick, caught live.** The first SoC-taper used a *constant*
+   cap with no discharge subtraction, so the reserve never shrank as the car
+   drained the battery → unbounded ramp. The `max(0, cap − battery_power)` form
+   restored the self-limiting feedback.
+
+### Config knobs (all hot-reloadable, all in the /config form)
+
+`ChargerControlConfig`: `enabled`, `dry_run`, `battery_floor_soc_pct` (charge-
+stop gate) + `battery_floor_hysteresis_pct`, `export_threshold_w`,
+`import_threshold_w`, `battery_max_output_w`, **`taper_floor_soc_pct`** (new this
+session — the SoC where the battery's signal contribution tapers to 0, *separate*
+from the charge-stop gate so you can lean harder on the battery without lowering
+the hard stop), `resume_surplus_threshold_w`, `min`/`max_charge_a`, `step_a`.
+Documented in `config.example.yaml` this session.
+
+### Hot config reload (Option A) + manual send
+
+Config saves apply live — only device IPs/connection params need a restart.
+`orchestrator.apply_hot_config(new_config)` swaps `app.state.config`, re-points
+the controller/engine, and **invalidates the price + solar caches** so
+calibration/injection-factor changes take effect at once (those caches store
+post-transform values). `_connection_fields_changed` gates the "restart
+required" message. The dashboard **Send N A** button calls
+`adopt_manual_target(amps)` so the controller *continues from* the manual value
+instead of overwriting it next tick.
+
+### UI / ops
+
+- **Etrel tile** shows setpoint / rule / decision text matching the SolarEdge
+  tile's styling, and renders even when the charger is null / outside the solar
+  window.
+- **Decision feed on /debug** ("Rule decisions (live)") — the SSE log stream
+  filtered to `solaredge decision` + `charger control decision`, one
+  copy-pasteable line per decision with every field the rule saw. Built for
+  reconstructing issues in a Claude Code chat.
+- **Hold reasons now print the trigger thresholds** (dead-band + anti-windup),
+  not just the current value: e.g. `signal 0 W (up-tick >500 W), import 58 W /
+  over-discharge 0 W (down-tick >500 W) — within dead-band, hold`.
+
+### Gotchas / lessons (reusable)
+
+- **Incognito reproduction rules out caching.** Spent too long blaming PWA cache
+  for a stuck dry-run badge; the user reproduced it in a clean session, proving a
+  CSS bug (`[hidden]` overridden by `display:inline-block` on the badge; fixed
+  with `[hidden]{display:none!important}`). If a "UI stale" symptom shows in
+  incognito, it's code, not cache — diff live `/api` JSON vs the rendered DOM
+  early.
+- **`git reset --hard origin/main` deletes committed-then-removed files.**
+  Recommending it to clean up nuked the user's TLS certs (they'd been committed)
+  → uvicorn crash-loop. Recovered via `git checkout <reflog-sha> -- <certs>`.
+  Don't reach for `reset --hard` as a tidy-up when tracked-vs-untracked state is
+  uncertain.
+- **A control law that switches formula on the sign of a measured quantity has a
+  seam exactly where that quantity ≈ 0.** Prefer one signed formula continuous
+  through zero (what the unified signal became).
+
+### State at end-of-session
+
+- All charger-control work pushed to `origin/main` (through `ae6aa0f`); this
+  history entry + the `config.example.yaml` `charger_control` block sit on top.
+  312 tests pass, all gates clean.
+- Still untracked at repo root: two `Screenshot 2026-05-14 *.png` files the user
+  dropped in — intentionally not committed.
+- Open caveat unchanged: the Tailscale TLS cert (in-uvicorn, no renewer) expires
+  ~2026-08-12 — see memory.
+
+### Next session
+
+The control law is stable and self-limiting; the natural next items are an
+EV-SoC input (the Etrel has no SoC channel and the Mercedes integration was
+removed — would need user approval to revive) and night/price-aware charging
+(currently solar-daytime only). A separate sensitivity knob for over-discharge
+vs. real grid import (both reuse `import_threshold_w` today) is a quick add if
+tuning calls for it.

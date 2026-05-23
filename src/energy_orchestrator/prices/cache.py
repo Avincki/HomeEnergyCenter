@@ -51,6 +51,15 @@ class PriceCache:
         self._points = tuple(sorted(points, key=lambda p: p.timestamp))
         self._last_refresh = now
 
+    def invalidate(self) -> None:
+        """Force the next ``is_stale`` check to return True (refetch next tick).
+
+        Used when pricing config (injection factor/offset, area) changes at
+        runtime so the new values are re-applied at the next tick instead of
+        waiting out the normal refresh window.
+        """
+        self._last_refresh = None
+
     def points_in_range(self, start: datetime, end: datetime) -> Sequence[PricePoint]:
         """Subset of cached points whose timestamp lies in ``[start, end)``."""
         return tuple(p for p in self._points if start <= p.timestamp < end)

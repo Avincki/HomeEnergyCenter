@@ -65,3 +65,15 @@ class SolarCache:
         is more useful to the dashboard than nothing while we back off.
         """
         self._next_attempt_at = now + _FAILURE_BACKOFF
+
+    def invalidate(self) -> None:
+        """Force a refetch on the next tick (clears both the age and cooldown
+        gates).
+
+        Used when solar config (e.g. calibration_factor) changes at runtime so
+        the new calibration is re-applied immediately rather than at the next
+        scheduled refresh. Costs one extra Forecast.Solar call; fine for the
+        occasional config save.
+        """
+        self._last_refresh = None
+        self._next_attempt_at = None

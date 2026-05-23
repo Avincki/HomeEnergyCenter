@@ -12,14 +12,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from energy_orchestrator.config.models import (
     AppConfig,
     CarChargerConfig,
+    ChargerControlConfig,
     DecisionConfig,
+    EtrelInchConfig,
     HomeWizardConfig,
     LoggingConfig,
     P1MeterConfig,
     PricesConfig,
     PricesProvider,
     SmallSolarConfig,
+    SolarConfig,
     SolarEdgeConfig,
+    SolarPlaneConfig,
     SonnenApiVersion,
     SonnenBatterieConfig,
     StorageConfig,
@@ -36,7 +40,11 @@ from energy_orchestrator.data import (
 )
 from energy_orchestrator.devices import DeviceReading
 from energy_orchestrator.devices.errors import DeviceConnectionError
-from energy_orchestrator.orchestrator import TickLoop, _charger_kick_stalled
+from energy_orchestrator.orchestrator import (
+    TickLoop,
+    _charger_kick_stalled,
+    _connection_fields_changed,
+)
 from energy_orchestrator.prices import PriceCache, PriceFetchError, PricePoint
 from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.web.override import OverrideController
@@ -64,6 +72,22 @@ def _config(tmp_path: Path, *, dry_run: bool = True) -> AppConfig:
         storage=StorageConfig(sqlite_path=tmp_path / "tick.db"),
         logging=LoggingConfig(log_dir=tmp_path / "logs"),
         web=WebConfig(),
+    )
+
+
+def _config_with_charger(tmp_path: Path) -> AppConfig:
+    """``_config`` plus a configured Etrel + solar so the tick loop builds an
+    active ChargerController (model_copy skips re-validation — fine here)."""
+    return _config(tmp_path, dry_run=False).model_copy(
+        update={
+            "etrel": EtrelInchConfig(host="192.0.2.250"),
+            "solar": SolarConfig(
+                latitude=51.0,
+                longitude=3.7,
+                planes=(SolarPlaneConfig(name="east", declination=45, azimuth=-90, kwp=6.0),),
+            ),
+            "charger_control": ChargerControlConfig(enabled=True, dry_run=True),
+        }
     )
 
 
@@ -195,6 +219,96 @@ def test_charger_kick_stalled_detects_clamped_idle() -> None:
     assert not _charger_kick_stalled(desired_a=0.0, active_a=0.0, current_a=0.0, min_charge_a=6.0)
     # Missing telemetry -> don't kick blind.
     assert not _charger_kick_stalled(desired_a=6.0, active_a=None, current_a=None, min_charge_a=6.0)
+
+
+def test_connection_fields_changed(tmp_path: Path) -> None:
+    base = _config(tmp_path)
+    assert _connection_fields_changed(base, base) == []
+    # Device host change -> needs restart.
+    sonnen_changed = base.model_copy(
+        update={"sonnen": base.sonnen.model_copy(update={"host": "192.0.2.99"})}
+    )
+    assert "sonnen" in _connection_fields_changed(base, sonnen_changed)
+    # Hot tuning changes are NOT flagged.
+    decision_changed = base.model_copy(
+        update={"decision": base.decision.model_copy(update={"battery_low_soc_pct": 55.0})}
+    )
+    assert _connection_fields_changed(base, decision_changed) == []
+    factor_changed = base.model_copy(
+        update={"prices": base.prices.model_copy(update={"injection_factor": 1.5})}
+    )
+    assert _connection_fields_changed(base, factor_changed) == []
+
+
+async def test_apply_hot_config_swaps_tuning_and_flags_restart(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    config = _config(tmp_path)
+    price_cache = PriceCache()
+    loop = TickLoop(config, session_factory, OverrideController(), price_cache, SolarCache())
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    price_cache.replace([_hour_price(now, injection=0.1)], now)
+    assert price_cache.last_refresh is not None
+
+    new = config.model_copy(
+        update={
+            "decision": config.decision.model_copy(update={"battery_low_soc_pct": 55.0}),
+            "prices": config.prices.model_copy(update={"injection_factor": 1.5}),
+            "sonnen": config.sonnen.model_copy(update={"host": "192.0.2.99"}),
+        }
+    )
+    restart = loop.apply_hot_config(new)
+    assert loop.config is new  # live config swapped
+    assert loop._engine.config.battery_low_soc_pct == 55.0  # engine reads it live
+    assert "sonnen" in restart  # connection change flagged for restart
+    assert price_cache.last_refresh is None  # prices changed -> cache invalidated
+
+
+async def test_apply_hot_config_swaps_charger_thresholds_in_place(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    loop = TickLoop(
+        _config_with_charger(tmp_path),
+        session_factory,
+        OverrideController(),
+        PriceCache(),
+        SolarCache(),
+    )
+    assert loop._charger is not None
+    controller = loop._charger
+    controller._target_a = 9.0  # ramp state that must survive a hot reload
+    new = loop.config.model_copy(
+        update={
+            "charger_control": loop.config.charger_control.model_copy(update={"min_charge_a": 8.0})
+        }
+    )
+    loop.apply_hot_config(new)
+    assert loop._charger is controller  # same instance -> integral state preserved
+    assert loop._charger.config.min_charge_a == 8.0
+    assert loop._charger._target_a == 9.0
+
+
+async def test_apply_hot_config_disables_charger_live(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    loop = TickLoop(
+        _config_with_charger(tmp_path),
+        session_factory,
+        OverrideController(),
+        PriceCache(),
+        SolarCache(),
+    )
+    assert loop._charger is not None
+    new = loop.config.model_copy(
+        update={
+            "charger_control": loop.config.charger_control.model_copy(update={"enabled": False})
+        }
+    )
+    loop.apply_hot_config(new)
+    assert loop._charger is None
 
 
 async def test_tick_persists_reading_and_decision(

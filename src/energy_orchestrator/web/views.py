@@ -236,14 +236,27 @@ async def config_save(
             config_path=config_path,
         )
 
+    # Apply the new config to the running app + tick loop so tuning changes
+    # (charger control, decision bands, solar calibration, price factors) take
+    # effect immediately. Connection changes (device host/port/token, price
+    # provider/api_key, web/storage/log paths) still need a restart;
+    # apply_hot_config returns those so we can tell the user.
+    request.app.state.config = new_config
+    tick_loop = getattr(request.app.state, "tick_loop", None)
+    restart_sections = tick_loop.apply_hot_config(new_config) if tick_loop is not None else []
+    if restart_sections:
+        applied = (
+            "Saved and applied live — except these, which need an app restart: "
+            f"{', '.join(restart_sections)}."
+        )
+    else:
+        applied = "Saved and applied live — no restart needed."
+
     return _render_config_form(
         request=request,
         form=config_to_form(new_config),
         errors={},
-        message=(
-            f"Saved to {config_path} (previous version kept as .bak). "
-            "Restart the orchestrator for changes to take effect."
-        ),
+        message=f"{applied} (previous version kept as {config_path}.bak)",
         message_kind="success",
         config_path=config_path,
     )

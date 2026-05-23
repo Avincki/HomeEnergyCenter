@@ -32,7 +32,7 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from energy_orchestrator.config.models import AppConfig
+from energy_orchestrator.config.models import AppConfig, ChargerControlConfig
 from energy_orchestrator.data import UnitOfWork
 from energy_orchestrator.data.models import (
     Decision,
@@ -716,6 +716,75 @@ class TickLoop:
             elapsed_s=round(elapsed, 1),
         )
 
+    def apply_hot_config(self, new_config: AppConfig) -> list[str]:
+        """Apply a freshly-saved config to the running loop WITHOUT a restart.
+
+        Hot-swaps the tuning/decision config that components read live each tick
+        (charger-control thresholds, decision bands, solar calibration, price
+        factors, intervals), and invalidates the solar/price caches when their
+        config changed so calibration / factors re-apply on the next tick rather
+        than after the normal refresh window.
+
+        Device connections (host/port/timeout/token/api_version), the price
+        provider identity + api_key, and web/storage/log paths are built once at
+        startup and are NOT reconnected here. The list of changed
+        restart-required sections is returned (and logged) so callers can tell
+        the user what still needs a restart.
+
+        Synchronous and await-free, so it runs atomically against the tick loop
+        on the same event loop. The web ``/config`` save calls this after
+        persisting ``config.yaml``.
+        """
+        old = self.config
+        needs_restart = _connection_fields_changed(old, new_config)
+        if needs_restart:
+            logger.warning(
+                "config saved; these sections need an app restart to take effect",
+                sections=needs_restart,
+            )
+        # Swap the live config so direct ``self.config`` reads see new values.
+        self.config = new_config
+        # Components cache their own slice and read it live — point them at the
+        # new one (no rebuild, so any in-flight state is preserved).
+        self._engine.config = new_config.decision
+        if self._solar_provider is not None and new_config.solar is not None:
+            self._solar_provider.config = new_config.solar
+        # Price factors are read at fetch; only swap when the provider class +
+        # credentials are unchanged (an identity change is flagged for restart).
+        if (
+            old.prices.provider == new_config.prices.provider
+            and old.prices.api_key == new_config.prices.api_key
+        ):
+            self._price_provider.config = new_config.prices
+        self._apply_charger_config(new_config.charger_control)
+        # Force the calibrated/factored caches to refetch so new values land on
+        # the next tick instead of after the refresh window (Option A).
+        if new_config.solar != old.solar:
+            self._solar_cache.invalidate()
+        if new_config.prices != old.prices:
+            self._price_cache.invalidate()
+        logger.info("config hot-reloaded (no restart)", needs_restart=needs_restart)
+        return needs_restart
+
+    def _apply_charger_config(self, cc: ChargerControlConfig) -> None:
+        """Apply charger-control changes live, preserving controller state.
+
+        Updates the active controller's thresholds in place (keeps the integral
+        ramp + SoC latch) and handles enable/disable transitions. (Re)building a
+        controller needs the Etrel device + solar provider, which are created at
+        startup — a newly-added device still needs a restart.
+        """
+        if self._charger is not None:
+            if cc.enabled:
+                self._charger.config = cc
+            else:
+                self._charger = None
+                self._charger_status = None
+                self._charger_kick_started_at = None
+                self._charger_kick_gave_up = False
+        elif cc.enabled and self._etrel is not None and self._solar_provider is not None:
+            self._charger = ChargerController(cc)
+
     def _is_daytime(self, when: datetime) -> bool:
         solar = self.config.solar
         if solar is None:
@@ -843,6 +912,39 @@ def _charger_kick_stalled(
     drawing = current_a is not None and current_a >= _CHARGER_KICK_DRAWING_A
     clamped = active_a is not None and active_a < desired_a - _CHARGER_SETPOINT_NOISE_A
     return clamped and not drawing
+
+
+def _connection_fields_changed(old: AppConfig, new: AppConfig) -> list[str]:
+    """Config sections whose change needs an app restart to take effect.
+
+    These build device clients / the price provider / server bindings once at
+    startup, so a live config swap can't apply them. Everything else (decision,
+    charger_control, solar tuning, price factors, intervals) is hot-reloadable.
+    Pydantic models compare field-by-field, so a whole-section ``!=`` catches
+    any connection-relevant change (host, port, timeout, token, api_version, …).
+    """
+    changed: list[str] = []
+    if old.sonnen != new.sonnen:
+        changed.append("sonnen")
+    if old.homewizard != new.homewizard:
+        changed.append("homewizard")
+    if old.solaredge != new.solaredge:
+        changed.append("solaredge")
+    if old.etrel != new.etrel:
+        changed.append("etrel")
+    if old.web != new.web:
+        changed.append("web")
+    # Pricing: only the provider identity + credentials need a restart; the
+    # factors/area are hot (applied at the next fetch).
+    if old.prices.provider != new.prices.provider:
+        changed.append("prices.provider")
+    if old.prices.api_key != new.prices.api_key:
+        changed.append("prices.api_key")
+    if old.storage.sqlite_path != new.storage.sqlite_path:
+        changed.append("storage.sqlite_path")
+    if old.logging.log_dir != new.logging.log_dir:
+        changed.append("logging.log_dir")
+    return changed
 
 
 __all__ = ["TickLoop"]

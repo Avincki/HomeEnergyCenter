@@ -7,15 +7,23 @@
  * v2 fixes a Windows-Chrome bug: when the SW's network fetch timed out,
  * the old fallback returned the '/' HTML for CSS/JS/SVG subresources,
  * which Chrome refused as a stylesheet/script (MIME mismatch) and the
- * page rendered unstyled. The new fetch handler only serves the HTML
- * shell to navigation requests; subresources use stale-while-revalidate
- * against a precached shell and fail cleanly if both cache and network
- * miss.
+ * page rendered unstyled. The fetch handler only serves the HTML shell
+ * to navigation requests; subresources fail cleanly (never the '/' HTML)
+ * if both cache and network miss.
+ *
+ * v3 switches subresources from stale-while-revalidate to network-first
+ * (cache fallback). Stale-while-revalidate served the cached CSS/JS first
+ * and only refreshed the cache in the background, so a fresh deploy showed
+ * up a load late — on an iOS standalone PWA (no easy reload) that read as
+ * "the app never updates" even though live /api data kept flowing.
+ * Network-first means a deploy appears on the next load; the cached copy
+ * remains as an offline fallback. Bumping CACHE forces this worker to
+ * install and drop the v2 cache.
  *
  * The live data API is never cached — it must always reach the server.
  */
 
-const CACHE = "eo-shell-v2";
+const CACHE = "eo-shell-v3";
 const PRECACHE = [
     "/",
     "/static/style.css",
@@ -66,22 +74,20 @@ self.addEventListener("fetch", (event) => {
         return;
     }
 
-    // Subresources: stale-while-revalidate. Never fall back to '/' HTML —
-    // Chrome would refuse text/html as CSS/JS and render the page unstyled.
+    // Subresources (CSS/JS/SVG): network-first so a fresh deploy shows up on
+    // the next load instead of lagging a load behind. Falls back to the
+    // cached copy keyed to the exact request — never the '/' HTML, which
+    // Chrome would refuse as CSS/JS and render the page unstyled — so the
+    // offline shell still renders during a LAN blip.
     event.respondWith(
-        caches.match(req).then((cached) => {
-            const networkFetch = fetch(req).then((resp) => {
+        fetch(req)
+            .then((resp) => {
                 if (resp.ok) {
                     const copy = resp.clone();
                     caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
                 }
                 return resp;
-            });
-            if (cached) {
-                networkFetch.catch(() => {});
-                return cached;
-            }
-            return networkFetch;
-        })
+            })
+            .catch(() => caches.match(req))
     );
 });

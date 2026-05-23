@@ -270,9 +270,19 @@ class ChargerController:
             target += cfg.step_a
             reason = f"signal {signal_w:.0f} W > {cfg.export_threshold_w:.0f} W"
         elif signal_w > cfg.export_threshold_w:
-            reason = f"surplus {signal_w:.0f} W but car not drawing — hold (anti-windup)"
+            reason = (
+                f"surplus {signal_w:.0f} W > {cfg.export_threshold_w:.0f} W but car "
+                f"not drawing — hold (anti-windup)"
+            )
         else:
-            reason = f"signal {signal_w:.0f} W within dead-band — hold"
+            # Show every trigger power so the hold is self-explanatory: the up-tick
+            # threshold the signal is under, and the down-tick threshold the
+            # import / over-discharge are under.
+            reason = (
+                f"signal {signal_w:.0f} W (up-tick >{cfg.export_threshold_w:.0f} W), "
+                f"import {import_w:.0f} W / over-discharge {over_discharge_w:.0f} W "
+                f"(down-tick >{cfg.import_threshold_w:.0f} W) — within dead-band, hold"
+            )
 
         target = _clamp(target, 0.0, cfg.max_charge_a)
         if target < cfg.min_charge_a:

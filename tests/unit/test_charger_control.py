@@ -108,8 +108,9 @@ def test_uptick_on_surplus_while_drawing() -> None:
     ctrl = ChargerController(_config())
     ctrl._target_a = 10.0  # white-box: pretend mid-session
     cmd = ctrl.decide(_inputs(grid_power_w=-600.0, battery_power_w=9000.0, actual_current_a=10.0))
-    # export 600 + a positive SoC-taper reserve clears the 500 W export
-    # threshold, and the car is drawing near the command -> +1 A.
+    # export 600 alone clears the 500 W export threshold (battery already
+    # discharging past its tapered cap -> remaining reserve 0), and the car is
+    # drawing near the command -> +1 A.
     assert not cmd.paused and cmd.target_a == 11.0
 
 
@@ -171,6 +172,34 @@ def test_discharge_reserve_below_resume_pauses() -> None:
     # 50%) stays under the 4300 W resume threshold -> can't start.
     cmd = ctrl.decide(_inputs(grid_power_w=0.0, battery_power_w=4000.0, battery_soc_pct=50.0))
     assert cmd.paused
+
+
+def test_discharge_reserve_self_limits_at_tapered_cap() -> None:
+    # Regression for the diverging up-tick: at 51% SoC the tapered cap is
+    # 9000*(51-30)/70 = 2700 W. With the battery already discharging 2700 W to
+    # feed the car, the remaining headroom is 0, so the signal is in the
+    # dead-band and the setpoint HOLDS instead of up-ticking the battery to death.
+    ctrl = ChargerController(_config())
+    ctrl._target_a = 10.0
+    cmd = ctrl.decide(
+        _inputs(
+            grid_power_w=0.0, battery_power_w=2700.0, battery_soc_pct=51.0, actual_current_a=10.0
+        )
+    )
+    assert cmd.target_a == 10.0
+
+
+def test_discharge_reserve_upticks_below_cap() -> None:
+    # Same 2700 W cap at 51% SoC, but the battery is only discharging 500 W ->
+    # ~2200 W of headroom remains -> still room to ramp -> +1 A.
+    ctrl = ChargerController(_config())
+    ctrl._target_a = 10.0
+    cmd = ctrl.decide(
+        _inputs(
+            grid_power_w=0.0, battery_power_w=500.0, battery_soc_pct=51.0, actual_current_a=10.0
+        )
+    )
+    assert cmd.target_a == 11.0
 
 
 # ----- daytime helper ----------------------------------------------------------

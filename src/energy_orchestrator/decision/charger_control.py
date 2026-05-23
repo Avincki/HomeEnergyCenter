@@ -13,9 +13,10 @@ Strategy (solar daytime only — night rules are a later phase):
 * Above it, follow available power. The available-power signal is the measured
   grid export **plus** a battery term that depends on the battery's direction:
   while it's *charging*, its charge power is added (diverting surplus into the
-  car instead of the battery); while *discharging or idle*, a SoC-tapered slice
-  of ``battery_max_output_w`` is added (full at 100% SoC, linearly to 0 at the
-  SoC floor), so the car leans on the battery only when it's full. This is what
+  car instead of the battery); while *discharging or idle*, the car may lean on
+  the battery up to an SoC-tapered cap (full at 100% SoC, linearly to 0 at the
+  floor) **minus what the battery is already discharging**, so the term is the
+  remaining headroom and shrinks as the car drains the battery (self-limiting). This is what
   makes 3-phase charging (6 A ≈ 4.1 kW minimum) actually engage — pure solar
   export rarely clears that floor.
 * Up-tick the setpoint when the signal exceeds ``export_threshold_w``; down-tick
@@ -159,26 +160,34 @@ class ChargerController:
         # signal = measured grid export + a battery term chosen by what the home
         # battery is doing:
         #   * Charging (battery_power_w < 0): the power flowing INTO the battery
-        #     is surplus we'd rather divert to the car, so add it whole.
-        #   * Discharging / idle: let the car lean on the battery, but taper that
-        #     headroom linearly by SoC — full battery_max_output_w at 100% SoC,
-        #     down to 0 at the SoC floor — so it only pulls hard when full.
+        #     is surplus we'd rather divert to the car, so add it whole. As the
+        #     car ramps it diverts that power, charging_w shrinks, self-limiting.
+        #   * Discharging / idle: let the car lean on the battery up to an
+        #     SoC-tapered cap (full battery_max_output_w at 100% SoC, linearly to
+        #     0 at the floor) MINUS what the battery is already discharging, so
+        #     the term is the *remaining* headroom. Subtracting the discharge is
+        #     essential: without it the (SoC-fixed) cap stays constant while the
+        #     car drains the battery, the grid never imports, and the setpoint
+        #     up-ticks without bound (this restores the self-limiting feedback the
+        #     original max_output - discharge reserve had).
         # The down-tick on *measured* grid import is still the backstop against a
         # wrong estimate driving sustained import.
         export_w = max(0.0, -inp.grid_power_w)
         import_w = max(0.0, inp.grid_power_w)
         charging_w = max(0.0, -inp.battery_power_w)
+        discharge_w = max(0.0, inp.battery_power_w)
         if charging_w > 0.0:
             reserve_w = charging_w
         else:
             soc_span = max(1.0, 100.0 - cfg.battery_floor_soc_pct)
-            reserve_w = _clamp(
+            tapered_cap = _clamp(
                 cfg.battery_max_output_w
                 * (inp.battery_soc_pct - cfg.battery_floor_soc_pct)
                 / soc_span,
                 0.0,
                 cfg.battery_max_output_w,
             )
+            reserve_w = _clamp(tapered_cap - discharge_w, 0.0, tapered_cap)
         signal_w = export_w + reserve_w
 
         if self._target_a < cfg.min_charge_a:

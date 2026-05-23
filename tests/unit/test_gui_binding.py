@@ -15,7 +15,9 @@ from energy_orchestrator.config.models import (
     PricesConfig,
     PricesProvider,
     SmallSolarConfig,
+    SolarConfig,
     SolarEdgeConfig,
+    SolarPlaneConfig,
     SonnenApiVersion,
     SonnenBatterieConfig,
     StorageConfig,
@@ -143,6 +145,55 @@ def test_form_to_config_rejects_csv_provider_without_csv_path() -> None:
     assert rebuilt is None
     # The cross-field check fires on the prices model itself (root-level error).
     assert any("csv_path" in v for v in errors.values())
+
+
+def test_solar_calibration_round_trips_and_preserves_yaml_only_fields() -> None:
+    # The form exposes only solar.calibration_factor; lat/lon, api_key and the
+    # panel planes are YAML-only and must survive a form save unchanged.
+    base = _baseline().model_copy(
+        update={
+            "solar": SolarConfig(
+                latitude=51.0,
+                longitude=3.7,
+                calibration_factor=1.30,
+                planes=(SolarPlaneConfig(name="east", declination=45, azimuth=-90, kwp=6.0),),
+            )
+        }
+    )
+    form = config_to_form(base)
+    assert form["solar.calibration_factor"] == "1.3"
+    assert "solar.latitude" not in form
+    assert "solar.planes" not in form
+
+    form["solar.calibration_factor"] = "1.56"
+    rebuilt, errors = form_to_config(form, baseline=base)
+    assert errors == {}
+    assert rebuilt is not None and rebuilt.solar is not None
+    assert rebuilt.solar.calibration_factor == 1.56
+    assert rebuilt.solar.latitude == 51.0
+    assert rebuilt.solar.longitude == 3.7
+    assert len(rebuilt.solar.planes) == 1
+    assert rebuilt.solar.planes[0].name == "east"
+
+
+def test_solar_calibration_blank_falls_back_to_baseline() -> None:
+    # An empty calibration field on save shouldn't blow up — fall back to baseline.
+    base = _baseline().model_copy(
+        update={
+            "solar": SolarConfig(
+                latitude=51.0,
+                longitude=3.7,
+                calibration_factor=1.56,
+                planes=(SolarPlaneConfig(name="east", declination=45, azimuth=-90, kwp=6.0),),
+            )
+        }
+    )
+    form = config_to_form(base)
+    form["solar.calibration_factor"] = ""
+    rebuilt, errors = form_to_config(form, baseline=base)
+    assert errors == {}
+    assert rebuilt is not None and rebuilt.solar is not None
+    assert rebuilt.solar.calibration_factor == 1.56
 
 
 # ----- dump_yaml --------------------------------------------------------------

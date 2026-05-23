@@ -193,7 +193,7 @@ class SolarConfig(_StrictModel):
     damping_morning: float = Field(default=0.0, ge=0.0, le=1.0)
     damping_evening: float = Field(default=0.0, ge=0.0, le=1.0)
     calibration_factor: float = Field(
-        default=1.0,
+        default=1.56,
         gt=0.0,
         le=5.0,
         description=(

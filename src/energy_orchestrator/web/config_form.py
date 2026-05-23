@@ -116,6 +116,17 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                     WebField("Retry count", "etrel.retry_count"),
                 ),
             ),
+            WebSection(
+                "Solar forecast (Forecast.Solar)",
+                (
+                    WebField(
+                        "Calibration factor",
+                        "solar.calibration_factor",
+                        hint="multiplier on the forecast to match measured output "
+                        "(e.g. 1.56 = +56%); lat/lon and panel planes stay in config.yaml",
+                    ),
+                ),
+            ),
         ),
     ),
     (

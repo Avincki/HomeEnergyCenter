@@ -66,11 +66,10 @@ def config_to_form(config: AppConfig) -> AppConfigForm:
     enums use their ``.value``; paths are rendered as POSIX strings.
     """
     nested = config.model_dump(mode="python")
-    # Drop optional top-level sections that the web form doesn't render —
-    # ``solar`` is always YAML-only. Otherwise _flatten would emit it as
-    # ``solar: ""`` and form_to_config would feed that back to Pydantic,
-    # which rejects empty-string-as-Config.
-    nested.pop("solar", None)
+    # Solar is mostly YAML-only (lat/lon, api_key, panel planes), so drop it
+    # from the bulk flatten — otherwise _flatten would emit nested junk keys.
+    # The one tunable scalar we DO render (calibration_factor) is re-added below.
+    solar = nested.pop("solar", None)
     # Same treatment for optional nested sub-sections — a None value would
     # become a stray ``homewizard.large_solar: ""`` form key that Pydantic
     # would later reject as not-a-LargeSolarConfig.
@@ -95,6 +94,11 @@ def config_to_form(config: AppConfig) -> AppConfigForm:
     for key in _SECRET_FIELDS:
         secret = _walk(nested, key.split("."))
         flat[key] = "" if secret is None else _coerce_secret_to_str(secret)
+    # Re-expose the solar calibration tuning knob for the form. The rest of the
+    # solar section (lat/lon, api_key, planes) stays YAML-only and is carried
+    # through baseline on save. Skipped entirely when solar is disabled.
+    if isinstance(solar, dict):
+        flat["solar.calibration_factor"] = str(solar.get("calibration_factor", 1.56))
     return flat
 
 
@@ -137,19 +141,22 @@ def form_to_config(
     if not isinstance(et, dict) or not str(et.get("host", "")).strip():
         nested["etrel"] = None
 
-    if baseline is not None and baseline.solar is not None and "solar" not in nested:
-        # Preserve the YAML-only solar section through web-form saves.
+    # Solar: lat/lon, api_key and the panel planes are YAML-only (not in the
+    # form), so rebuild the section from baseline and overlay the one tunable
+    # the form exposes (calibration_factor). An empty/missing form value falls
+    # back to the baseline. Skipped when there's no baseline solar to preserve.
+    form_solar = nested.get("solar")
+    form_solar = form_solar if isinstance(form_solar, dict) else {}
+    if baseline is not None and baseline.solar is not None:
+        bs = baseline.solar
+        form_cal = form_solar.get("calibration_factor")
         nested["solar"] = {
-            "latitude": baseline.solar.latitude,
-            "longitude": baseline.solar.longitude,
-            "api_key": (
-                baseline.solar.api_key.get_secret_value()
-                if baseline.solar.api_key is not None
-                else None
-            ),
-            "damping_morning": baseline.solar.damping_morning,
-            "damping_evening": baseline.solar.damping_evening,
-            "calibration_factor": baseline.solar.calibration_factor,
+            "latitude": bs.latitude,
+            "longitude": bs.longitude,
+            "api_key": (bs.api_key.get_secret_value() if bs.api_key is not None else None),
+            "damping_morning": bs.damping_morning,
+            "damping_evening": bs.damping_evening,
+            "calibration_factor": (bs.calibration_factor if form_cal in (None, "") else form_cal),
             "planes": [
                 {
                     "name": p.name,
@@ -160,6 +167,10 @@ def form_to_config(
                 for p in baseline.solar.planes
             ],
         }
+    elif "solar" in nested:
+        # A partial solar from the form can't build a valid SolarConfig
+        # (needs lat/lon/planes) and there's no baseline to merge into — drop it.
+        nested.pop("solar", None)
 
     try:
         config = AppConfig.model_validate(nested)

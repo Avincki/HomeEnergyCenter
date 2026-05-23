@@ -596,6 +596,7 @@ async def post_shutdown() -> dict[str, Any]:
 
 @router.post("/etrel/set-current", dependencies=[Depends(require_same_origin)])
 async def post_etrel_set_current(
+    request: Request,
     body: EtrelSetCurrentRequest,
     config: ConfigDep,
     etrel_client: EtrelClientDep,
@@ -638,10 +639,22 @@ async def post_etrel_set_current(
         set_current_a_after = await etrel_client.read_set_current_a()
     except DeviceError as e:
         readback_error = str(e)
+    # If the rule-based controller is running it would overwrite this manual
+    # setpoint on its next decision tick. Push the value into it so it adopts
+    # the manual target instead of fighting it. Only when the write actually
+    # took (ACKed, or readback confirms a silently-applied write).
+    took = write_error is None or (
+        set_current_a_after is not None and abs(set_current_a_after - body.amps) < 0.1
+    )
+    controller_target_set = False
+    tick_loop = getattr(request.app.state, "tick_loop", None)
+    if tick_loop is not None and took:
+        controller_target_set = tick_loop.adopt_manual_charger_target(body.amps)
     return {
         "amps_requested": body.amps,
         "write_succeeded": write_error is None,
         "write_error": write_error,
         "set_current_a_after": set_current_a_after,
         "readback_error": readback_error,
+        "controller_target_set": controller_target_set,
     }

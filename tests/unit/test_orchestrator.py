@@ -311,6 +311,33 @@ async def test_apply_hot_config_disables_charger_live(
     assert loop._charger is None
 
 
+async def test_adopt_manual_charger_target(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    loop = TickLoop(
+        _config_with_charger(tmp_path),
+        session_factory,
+        OverrideController(),
+        PriceCache(),
+        SolarCache(),
+    )
+    assert loop._charger is not None
+    assert loop.adopt_manual_charger_target(11.0) is True
+    assert loop._charger.target_a == 11.0
+
+
+async def test_adopt_manual_charger_target_noop_when_inactive(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    loop = TickLoop(
+        _config(tmp_path), session_factory, OverrideController(), PriceCache(), SolarCache()
+    )
+    assert loop._charger is None
+    assert loop.adopt_manual_charger_target(11.0) is False
+
+
 async def test_tick_persists_reading_and_decision(
     tmp_path: Path,
     session_factory: async_sessionmaker[AsyncSession],

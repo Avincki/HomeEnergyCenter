@@ -55,6 +55,14 @@ def test_attached_chargeable_status_set() -> None:
     assert ATTACHED_CHARGEABLE_STATUS.isdisjoint({0, 7, 8})
 
 
+def test_adopt_manual_target_clamps_to_envelope() -> None:
+    ctrl = ChargerController(_config())  # max 16
+    assert ctrl.adopt_manual_target(10.0) == 10.0
+    assert ctrl.target_a == 10.0  # integral accumulator now reflects the manual value
+    assert ctrl.adopt_manual_target(99.0) == 16.0  # clamped to max_charge_a
+    assert ctrl.adopt_manual_target(-5.0) == 0.0  # clamped to 0
+
+
 def test_pauses_below_battery_soc_floor() -> None:
     ctrl = ChargerController(_config())  # floor 30, hysteresis 3
     cmd = ctrl.decide(_inputs(battery_soc_pct=25.0))

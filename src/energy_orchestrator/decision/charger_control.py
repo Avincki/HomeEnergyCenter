@@ -142,6 +142,20 @@ class ChargerController:
     def target_a(self) -> float:
         return self._target_a
 
+    def adopt_manual_target(self, amps: float) -> float:
+        """Adopt a manually-commanded current as the controller's target.
+
+        While charger control is active the rule engine re-asserts its own
+        target every decision tick, so a one-off manual write (the dashboard
+        "Send" button / the API) gets overwritten within a tick unless the
+        controller takes it as its new starting point. This sets the integral
+        accumulator to the clamped manual value so the controller continues
+        from there (it may still ramp up/down on the next tick as conditions
+        warrant) instead of fighting it. Returns the clamped value applied.
+        """
+        self._target_a = _clamp(amps, 0.0, self.config.max_charge_a)
+        return self._target_a
+
     def decide(self, inp: ChargerInputs) -> ChargerCommand:
         cfg = self.config
 

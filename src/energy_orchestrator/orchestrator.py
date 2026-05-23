@@ -785,6 +785,20 @@ class TickLoop:
         elif cc.enabled and self._etrel is not None and self._solar_provider is not None:
             self._charger = ChargerController(cc)
 
+    def adopt_manual_charger_target(self, amps: float) -> bool:
+        """Push a manual current command into the running charger controller.
+
+        Called by the /etrel/set-current API after a manual write so the
+        controller adopts the value as its target instead of overwriting it on
+        the next decision tick. Returns True when charger control is active (and
+        so adopted it), False when it's inactive (the manual write stands alone).
+        """
+        if self._charger is None:
+            return False
+        applied = self._charger.adopt_manual_target(amps)
+        logger.info("charger manual target adopted", amps=applied)
+        return True
+
     def _is_daytime(self, when: datetime) -> bool:
         solar = self.config.solar
         if solar is None:

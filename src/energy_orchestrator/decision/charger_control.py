@@ -11,10 +11,13 @@ Strategy (solar daytime only — night rules are a later phase):
 
 * Below ``battery_floor_soc_pct`` the home battery has priority — don't charge.
 * Above it, follow available power. The available-power signal is the measured
-  grid export **plus** the home battery's spare discharge capacity, so the car
-  can draw on the battery (down to the SoC floor), not only on live solar
-  export. This is what makes 3-phase charging (6 A ≈ 4.1 kW minimum) actually
-  engage — pure solar export rarely clears that floor.
+  grid export **plus** a battery term that depends on the battery's direction:
+  while it's *charging*, its charge power is added (diverting surplus into the
+  car instead of the battery); while *discharging or idle*, a SoC-tapered slice
+  of ``battery_max_output_w`` is added (full at 100% SoC, linearly to 0 at the
+  SoC floor), so the car leans on the battery only when it's full. This is what
+  makes 3-phase charging (6 A ≈ 4.1 kW minimum) actually engage — pure solar
+  export rarely clears that floor.
 * Up-tick the setpoint when the signal exceeds ``export_threshold_w``; down-tick
   when *measured* grid import exceeds ``import_threshold_w``. The down-tick is on
   real import (not the virtual signal) and takes priority, so a wrong reserve
@@ -47,10 +50,15 @@ from energy_orchestrator.config.models import ChargerControlConfig
 logger = structlog.stdlib.get_logger(__name__)
 
 # Etrel connector-status codes that mean "a car is plugged in and chargeable".
-# Excludes 0=Available (no car), 5=Finishing (done), 6=Reserved, 7=Unavailable,
-# 8=Faulted. Status reliability on this firmware is suspect (see the Etrel tile
-# notes), so the anti-windup guard below is the real safety net, not this set.
-ATTACHED_CHARGEABLE_STATUS: frozenset[int] = frozenset({1, 2, 3, 4})
+# Permissive on purpose: this Sonnen-managed firmware parks a plugged-in, idle
+# car in 6=Reserved (not 1=Plugged) and cycles through 5=Finishing, so both are
+# included (confirmed against the live unit 2026-05-23 — without 6 the car sat
+# stuck "paused: no chargeable car attached"). Only 0=Available (no car),
+# 7=Unavailable and 8=Faulted are treated as "no chargeable car". Status
+# reliability on this firmware is suspect, so the anti-windup guard below is the
+# real safety net — a connector with no car actually drawing current won't ramp
+# up regardless of the reported status.
+ATTACHED_CHARGEABLE_STATUS: frozenset[int] = frozenset({1, 2, 3, 4, 5, 6})
 
 # How closely the measured draw must track the commanded current to count as
 # "really charging" for the anti-windup guard (amps). Wide enough to tolerate
@@ -148,10 +156,29 @@ class ChargerController:
             )
 
         # ----- eligible: available-power signal -----
+        # signal = measured grid export + a battery term chosen by what the home
+        # battery is doing:
+        #   * Charging (battery_power_w < 0): the power flowing INTO the battery
+        #     is surplus we'd rather divert to the car, so add it whole.
+        #   * Discharging / idle: let the car lean on the battery, but taper that
+        #     headroom linearly by SoC — full battery_max_output_w at 100% SoC,
+        #     down to 0 at the SoC floor — so it only pulls hard when full.
+        # The down-tick on *measured* grid import is still the backstop against a
+        # wrong estimate driving sustained import.
         export_w = max(0.0, -inp.grid_power_w)
         import_w = max(0.0, inp.grid_power_w)
-        discharge_w = max(0.0, inp.battery_power_w)
-        reserve_w = _clamp(cfg.battery_max_output_w - discharge_w, 0.0, cfg.battery_max_output_w)
+        charging_w = max(0.0, -inp.battery_power_w)
+        if charging_w > 0.0:
+            reserve_w = charging_w
+        else:
+            soc_span = max(1.0, 100.0 - cfg.battery_floor_soc_pct)
+            reserve_w = _clamp(
+                cfg.battery_max_output_w
+                * (inp.battery_soc_pct - cfg.battery_floor_soc_pct)
+                / soc_span,
+                0.0,
+                cfg.battery_max_output_w,
+            )
         signal_w = export_w + reserve_w
 
         if self._target_a < cfg.min_charge_a:

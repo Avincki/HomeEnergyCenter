@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 
 from energy_orchestrator.config.models import ChargerControlConfig
 from energy_orchestrator.decision.charger_control import (
+    ATTACHED_CHARGEABLE_STATUS,
     ChargerController,
     ChargerInputs,
     is_daytime,
@@ -46,6 +47,14 @@ def test_pauses_when_no_car_attached() -> None:
     assert cmd.paused and cmd.target_a == 0.0
 
 
+def test_attached_chargeable_status_set() -> None:
+    # Plugged/Charging/Suspended (1-4) plus this firmware's Finishing (5) and
+    # Reserved (6) count as a car present; Available (0) / Unavailable (7) /
+    # Faulted (8) do not.
+    assert {1, 2, 3, 4, 5, 6} <= ATTACHED_CHARGEABLE_STATUS
+    assert ATTACHED_CHARGEABLE_STATUS.isdisjoint({0, 7, 8})
+
+
 def test_pauses_below_battery_soc_floor() -> None:
     ctrl = ChargerController(_config())  # floor 30, hysteresis 3
     cmd = ctrl.decide(_inputs(battery_soc_pct=25.0))
@@ -54,14 +63,16 @@ def test_pauses_below_battery_soc_floor() -> None:
 
 def test_soc_floor_hysteresis() -> None:
     ctrl = ChargerController(_config())  # floor 30, hyst 3 -> re-enable at 33
-    # Enable with a strong signal (battery idle -> reserve 9 kW).
-    assert not ctrl.decide(_inputs(battery_soc_pct=50.0)).paused
+    # Strong export keeps the resume signal covered regardless of the SoC-taper,
+    # so this isolates the SoC-floor latch.
+    strong = {"grid_power_w": -5000.0, "battery_power_w": 0.0}
+    assert not ctrl.decide(_inputs(battery_soc_pct=50.0, **strong)).paused
     # Drop just below the floor -> disabled.
-    assert ctrl.decide(_inputs(battery_soc_pct=29.0)).paused
+    assert ctrl.decide(_inputs(battery_soc_pct=29.0, **strong)).paused
     # Back between floor and floor+hysteresis -> still disabled (latched).
-    assert ctrl.decide(_inputs(battery_soc_pct=31.0)).paused
+    assert ctrl.decide(_inputs(battery_soc_pct=31.0, **strong)).paused
     # Above floor + hysteresis -> re-enabled.
-    assert not ctrl.decide(_inputs(battery_soc_pct=34.0)).paused
+    assert not ctrl.decide(_inputs(battery_soc_pct=34.0, **strong)).paused
 
 
 # ----- resume from pause -------------------------------------------------------
@@ -69,16 +80,17 @@ def test_soc_floor_hysteresis() -> None:
 
 def test_resume_to_min_when_signal_covers_it() -> None:
     ctrl = ChargerController(_config())  # resume threshold 4300, min 6
-    # Battery idle -> reserve 9 kW -> signal well over the resume threshold.
-    cmd = ctrl.decide(_inputs(grid_power_w=0.0, battery_power_w=0.0))
+    # Battery charging 5 kW with no export -> that charge power is diverted to
+    # the car -> signal over the resume threshold.
+    cmd = ctrl.decide(_inputs(grid_power_w=0.0, battery_power_w=-5000.0))
     assert not cmd.paused and cmd.target_a == 6.0
 
 
 def test_resume_blocked_when_signal_too_low() -> None:
     ctrl = ChargerController(_config())
-    # Battery already discharging at max (9 kW) -> reserve 0; export only 4000 W
-    # -> signal 4000 < 4300 resume threshold.
-    cmd = ctrl.decide(_inputs(grid_power_w=-4000.0, battery_power_w=9000.0))
+    # SoC just above the floor -> taper reserve tiny (~640 W); a modest 3000 W
+    # export still leaves the signal under the 4300 resume threshold.
+    cmd = ctrl.decide(_inputs(grid_power_w=-3000.0, battery_power_w=0.0, battery_soc_pct=35.0))
     assert cmd.paused and cmd.target_a == 0.0
 
 
@@ -96,7 +108,8 @@ def test_uptick_on_surplus_while_drawing() -> None:
     ctrl = ChargerController(_config())
     ctrl._target_a = 10.0  # white-box: pretend mid-session
     cmd = ctrl.decide(_inputs(grid_power_w=-600.0, battery_power_w=9000.0, actual_current_a=10.0))
-    # export 600 + reserve 0 = 600 > 500 export threshold, car drawing -> +1 A.
+    # export 600 + a positive SoC-taper reserve clears the 500 W export
+    # threshold, and the car is drawing near the command -> +1 A.
     assert not cmd.paused and cmd.target_a == 11.0
 
 
@@ -133,10 +146,11 @@ def test_uptick_clamped_to_max() -> None:
 def test_holds_within_deadband() -> None:
     ctrl = ChargerController(_config())
     ctrl._target_a = 10.0
-    # Signal exactly the battery reserve minus near-max discharge: keep it in
-    # the dead-band (>import threshold check fails, <=export threshold).
-    cmd = ctrl.decide(_inputs(grid_power_w=0.0, battery_power_w=8700.0, actual_current_a=10.0))
-    # export 0 + reserve (9000-8700=300) = 300, not > 500 export, no import -> hold.
+    # SoC just above the floor -> tiny taper reserve (~390 W), no export, no
+    # import: signal sits in the dead-band (<= 500 W export) -> hold.
+    cmd = ctrl.decide(
+        _inputs(grid_power_w=0.0, battery_power_w=0.0, battery_soc_pct=33.0, actual_current_a=10.0)
+    )
     assert cmd.target_a == 10.0
 
 
@@ -145,15 +159,17 @@ def test_holds_within_deadband() -> None:
 
 def test_battery_reserve_enables_charging_without_export() -> None:
     ctrl = ChargerController(_config())
-    # No grid export at all, battery idle -> reserve 9 kW alone resumes charging.
-    cmd = ctrl.decide(_inputs(grid_power_w=0.0, battery_power_w=0.0))
+    # High SoC, battery idle, no grid export: the SoC-tapered reserve alone
+    # (~5.1 kW at 70%) clears the resume threshold.
+    cmd = ctrl.decide(_inputs(grid_power_w=0.0, battery_power_w=0.0, battery_soc_pct=70.0))
     assert not cmd.paused and cmd.target_a == 6.0
 
 
-def test_no_reserve_when_battery_maxed_and_no_export() -> None:
+def test_discharge_reserve_below_resume_pauses() -> None:
     ctrl = ChargerController(_config())
-    # Battery already at max discharge, no export -> signal 0 -> can't resume.
-    cmd = ctrl.decide(_inputs(grid_power_w=0.0, battery_power_w=9000.0))
+    # Battery discharging at mid SoC, no export: the tapered reserve (~2.6 kW at
+    # 50%) stays under the 4300 W resume threshold -> can't start.
+    cmd = ctrl.decide(_inputs(grid_power_w=0.0, battery_power_w=4000.0, battery_soc_pct=50.0))
     assert cmd.paused
 
 

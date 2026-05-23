@@ -15,8 +15,10 @@ Strategy (solar daytime only — night rules are a later phase):
   while it's *charging*, its charge power is added (diverting surplus into the
   car instead of the battery); while *discharging or idle*, the car may lean on
   the battery up to an SoC-tapered cap (full at 100% SoC, linearly to 0 at the
-  floor) **minus what the battery is already discharging**, so the term is the
-  remaining headroom and shrinks as the car drains the battery (self-limiting). This is what
+  taper floor) **minus what the battery is already discharging**, so the term is
+  the remaining headroom and shrinks as the car drains the battery
+  (self-limiting). The taper floor (``taper_floor_soc_pct``) is separate from the
+  charge-stop floor (``battery_floor_soc_pct``). This is what
   makes 3-phase charging (6 A ≈ 4.1 kW minimum) actually engage — pure solar
   export rarely clears that floor.
 * Up-tick the setpoint when the signal exceeds ``export_threshold_w``; down-tick
@@ -178,7 +180,8 @@ class ChargerController:
         #     car ramps it diverts that power, charging_w shrinks, self-limiting.
         #   * Discharging / idle: let the car lean on the battery up to an
         #     SoC-tapered cap (full battery_max_output_w at 100% SoC, linearly to
-        #     0 at the floor) MINUS what the battery is already discharging, so
+        #     0 at taper_floor_soc_pct) MINUS what the battery is already
+        #     discharging, so
         #     the term is the *remaining* headroom. Subtracting the discharge is
         #     essential: without it the (SoC-fixed) cap stays constant while the
         #     car drains the battery, the grid never imports, and the setpoint
@@ -193,10 +196,10 @@ class ChargerController:
         if charging_w > 0.0:
             reserve_w = charging_w
         else:
-            soc_span = max(1.0, 100.0 - cfg.battery_floor_soc_pct)
+            soc_span = max(1.0, 100.0 - cfg.taper_floor_soc_pct)
             tapered_cap = _clamp(
                 cfg.battery_max_output_w
-                * (inp.battery_soc_pct - cfg.battery_floor_soc_pct)
+                * (inp.battery_soc_pct - cfg.taper_floor_soc_pct)
                 / soc_span,
                 0.0,
                 cfg.battery_max_output_w,

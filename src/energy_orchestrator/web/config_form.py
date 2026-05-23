@@ -223,6 +223,12 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                         "not only live solar export",
                     ),
                     WebField(
+                        "Signal taper floor (%)",
+                        "charger_control.taper_floor_soc_pct",
+                        hint="SoC where the battery's contribution to the signal tapers to 0 "
+                        "(separate from the charge-stop floor; lower = lean harder on the battery)",
+                    ),
+                    WebField(
                         "Resume surplus threshold (W)",
                         "charger_control.resume_surplus_threshold_w",
                         hint="resume from pause only when the signal covers the min draw",

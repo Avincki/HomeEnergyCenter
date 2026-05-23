@@ -210,6 +210,27 @@ def test_discharge_reserve_upticks_below_cap() -> None:
     assert cmd.target_a == 11.0
 
 
+def test_taper_floor_decoupled_from_charge_stop_floor() -> None:
+    # The taper depends on taper_floor_soc_pct, not the charge-stop floor. At
+    # 33% SoC (above the unchanged 30% gate) the default taper floor (30) gives
+    # a tiny ~390 W reserve -> dead-band hold; a taper floor of 10 gives
+    # 9000*(33-10)/90 ~= 2300 W -> enough to up-tick. battery_floor_soc_pct stays
+    # 30, so the eligibility gate is identical in both cases.
+    args = {
+        "grid_power_w": 0.0,
+        "battery_power_w": 0.0,
+        "battery_soc_pct": 33.0,
+        "actual_current_a": 10.0,
+    }
+    held = ChargerController(_config())  # taper floor 30 (default)
+    held._target_a = 10.0
+    assert held.decide(_inputs(**args)).target_a == 10.0  # dead-band hold
+
+    aggressive = ChargerController(_config(taper_floor_soc_pct=10.0))
+    aggressive._target_a = 10.0
+    assert aggressive.decide(_inputs(**args)).target_a == 11.0  # bigger reserve -> up-tick
+
+
 # ----- daytime helper ----------------------------------------------------------
 
 

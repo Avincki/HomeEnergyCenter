@@ -269,6 +269,14 @@ class ChargerControlConfig(_StrictModel):
     # floor), not only on live solar export.  [TUNABLE]
     battery_max_output_w: float = Field(default=9000.0, gt=0.0)
 
+    # SoC floor for the discharge-reserve *taper* — separate from
+    # battery_floor_soc_pct (the charge-stop gate). The battery's contribution
+    # to the available-power signal tapers linearly from battery_max_output_w at
+    # 100% SoC down to 0 at this SoC. Set it below battery_floor_soc_pct to let
+    # the signal lean harder on the battery above the charge-stop point.
+    # [TUNABLE]
+    taper_floor_soc_pct: Percent = 30.0
+
     # Resume from pause to min_charge_a only when the signal covers that draw,
     # so resuming doesn't immediately import and flap. ~ min_charge_a x 3 x
     # 230 V + margin on 3-phase.  [TUNABLE]

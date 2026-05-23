@@ -358,6 +358,7 @@ def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
             "export_threshold_w": config.charger_control.export_threshold_w,
             "import_threshold_w": config.charger_control.import_threshold_w,
             "battery_max_output_w": config.charger_control.battery_max_output_w,
+            "taper_floor_soc_pct": config.charger_control.taper_floor_soc_pct,
             "resume_surplus_threshold_w": config.charger_control.resume_surplus_threshold_w,
             "min_charge_a": config.charger_control.min_charge_a,
             "max_charge_a": config.charger_control.max_charge_a,

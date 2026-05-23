@@ -210,6 +210,13 @@ def _flatten(obj: Any, prefix: tuple[str, ...], out: AppConfigForm) -> None:
     if obj is None:
         out[key] = ""
         return
+    if isinstance(obj, bool):
+        # Lowercase so the value matches what checkbox inputs post back
+        # ("true"/"false") and what the config.html checkbox compares against.
+        # str(bool) would give "True"/"False" and the box would never render
+        # checked even when the underlying flag is on.
+        out[key] = "true" if obj else "false"
+        return
     if isinstance(obj, Path):
         out[key] = obj.as_posix()
         return
@@ -331,6 +338,19 @@ def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
             "hysteresis_pct": config.decision.hysteresis_pct,
             "forecast_horizon_h": config.decision.forecast_horizon_h,
             "dry_run": config.decision.dry_run,
+        },
+        "charger_control": {
+            "enabled": config.charger_control.enabled,
+            "dry_run": config.charger_control.dry_run,
+            "battery_floor_soc_pct": config.charger_control.battery_floor_soc_pct,
+            "battery_floor_hysteresis_pct": config.charger_control.battery_floor_hysteresis_pct,
+            "export_threshold_w": config.charger_control.export_threshold_w,
+            "import_threshold_w": config.charger_control.import_threshold_w,
+            "battery_max_output_w": config.charger_control.battery_max_output_w,
+            "resume_surplus_threshold_w": config.charger_control.resume_surplus_threshold_w,
+            "min_charge_a": config.charger_control.min_charge_a,
+            "max_charge_a": config.charger_control.max_charge_a,
+            "step_a": config.charger_control.step_a,
         },
         "storage": {
             "sqlite_path": config.storage.sqlite_path.as_posix(),

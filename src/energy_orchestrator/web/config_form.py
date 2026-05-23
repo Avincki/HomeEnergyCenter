@@ -170,6 +170,69 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                     ),
                 ),
             ),
+            WebSection(
+                "Charger control (Etrel)",
+                (
+                    WebField(
+                        "Enabled",
+                        "charger_control.enabled",
+                        "checkbox",
+                        hint="master switch — needs an 'etrel' device + 'solar' "
+                        "(lat/lon) configured to actually run",
+                    ),
+                    WebField(
+                        "Dry-run (compute + log, no charger writes)",
+                        "charger_control.dry_run",
+                        "checkbox",
+                        hint="leave on to observe decisions before it drives the charger",
+                    ),
+                    WebField(
+                        "Battery SoC floor (%)",
+                        "charger_control.battery_floor_soc_pct",
+                        hint="below this the home battery has priority; the car won't charge",
+                    ),
+                    WebField(
+                        "SoC floor hysteresis (%)",
+                        "charger_control.battery_floor_hysteresis_pct",
+                    ),
+                    WebField(
+                        "Export threshold (W)",
+                        "charger_control.export_threshold_w",
+                        hint="up-tick the current when the surplus signal exceeds this",
+                    ),
+                    WebField(
+                        "Import threshold (W)",
+                        "charger_control.import_threshold_w",
+                        hint="down-tick when measured grid import exceeds this",
+                    ),
+                    WebField(
+                        "Battery max discharge (W)",
+                        "charger_control.battery_max_output_w",
+                        hint="virtual headroom so the car can draw on the battery, "
+                        "not only live solar export",
+                    ),
+                    WebField(
+                        "Resume surplus threshold (W)",
+                        "charger_control.resume_surplus_threshold_w",
+                        hint="resume from pause only when the signal covers the min draw",
+                    ),
+                    WebField(
+                        "Min charge current (A)",
+                        "charger_control.min_charge_a",
+                        hint="below this the charger pauses (0-16)",
+                    ),
+                    WebField(
+                        "Max charge current (A)",
+                        "charger_control.max_charge_a",
+                        hint="installation hard cap (≤ 16 A)",
+                    ),
+                    WebField(
+                        "Step per decision (A)",
+                        "charger_control.step_a",
+                        hint="±adjustment per decision tick",
+                    ),
+                ),
+            ),
         ),
     ),
     (

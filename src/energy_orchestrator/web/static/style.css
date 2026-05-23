@@ -15,6 +15,12 @@
 
 * { box-sizing: border-box; }
 
+/* Keep the `hidden` attribute reliable. Several badges set an explicit
+   `display` (.charger-badge / .override-flag use inline-block), which would
+   otherwise beat the UA's `[hidden] { display: none }` and leave them
+   permanently visible even though the JS toggles the attribute correctly. */
+[hidden] { display: none !important; }
+
 body {
     margin: 0;
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;

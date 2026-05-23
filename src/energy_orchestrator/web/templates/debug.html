@@ -52,28 +52,17 @@
 </section>
 
 <section>
-    <h2>Recent decision changes (last 24 h)</h2>
-    {% if recent_decisions %}
-    <table>
-        <thead>
-            <tr><th>When</th><th>State</th><th>Rule</th><th>Reason</th><th>Override</th><th>Forecast end-SoC</th></tr>
-        </thead>
-        <tbody>
-        {% for d in recent_decisions | reverse %}
-            <tr>
-                <td>{{ d.timestamp | localtime }}</td>
-                <td><span class="badge badge-{{ d.state }}">{{ d.state }}</span></td>
-                <td>{{ d.rule_fired }}</td>
-                <td class="reason">{{ d.reason }}</td>
-                <td>{% if d.manual_override %}{{ d.override_mode }}{% else %}&mdash;{% endif %}</td>
-                <td>{% if d.forecast_end_soc_pct is not none %}{{ "%.1f" | format(d.forecast_end_soc_pct) }}%{% else %}&mdash;{% endif %}</td>
-            </tr>
-        {% endfor %}
-        </tbody>
-    </table>
-    {% else %}
-    <p class="empty">No state changes in the last 24 h.</p>
-    {% endif %}
+    <h2>Rule decisions (live) <span id="decision-status" class="hint">connecting&hellip;</span></h2>
+    <p class="hint">
+        Every SolarEdge and Etrel charger decision as it happens, with all the
+        values the rule saw &mdash; streamed from this server session's log.
+        Hit <strong>Copy</strong> to grab the whole feed for a bug report.
+    </p>
+    <div class="log-controls">
+        <button id="decision-copy" type="button">Copy</button>
+        <button id="decision-clear" type="button">Clear</button>
+    </div>
+    <pre id="decision-feed" class="log-stream"></pre>
 </section>
 
 <section>
@@ -110,6 +99,70 @@ document.getElementById('clear-errors').addEventListener('click', async function
         alert('Error: ' + (err.detail || resp.statusText));
     }
 });
+
+// Live "Rule decisions" feed: subscribe to the same SSE log stream the /logs
+// page uses, keep only the two per-tick decision events, and render each as a
+// compact one-liner with every field the rule saw. Copy-pasteable for bug
+// reports. The stream replays this server session on connect, then follows.
+(function () {
+    const DECISION_EVENTS = new Set(['solaredge decision', 'charger control decision']);
+    const MAX_LINES = 2000;
+    const feed = document.getElementById('decision-feed');
+    const statusEl = document.getElementById('decision-status');
+    const copyBtn = document.getElementById('decision-copy');
+    const clearBtn = document.getElementById('decision-clear');
+    if (!feed) return;
+
+    function pad(n) { return String(n).padStart(2, '0'); }
+    function fmtTs(raw) {
+        if (!raw) return '';
+        const d = new Date(raw);
+        if (isNaN(d.getTime())) return String(raw);
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ` +
+               `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+    function formatLine(p) {
+        const known = new Set(['event', 'level', 'logger', 'timestamp', 'tick_at']);
+        const extras = Object.entries(p)
+            .filter(([k]) => !known.has(k))
+            .map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`)
+            .join(' ');
+        return `${fmtTs(p.timestamp)}  ${p.event}  ${extras}`.trimEnd();
+    }
+    function append(raw) {
+        let p;
+        try { p = JSON.parse(raw); } catch { return; }
+        if (!DECISION_EVENTS.has(p.event)) return;
+        const atBottom = feed.scrollTop + feed.clientHeight >= feed.scrollHeight - 4;
+        feed.textContent += (feed.textContent ? '\n' : '') + formatLine(p);
+        const lines = feed.textContent.split('\n');
+        if (lines.length > MAX_LINES) feed.textContent = lines.slice(-MAX_LINES).join('\n');
+        if (atBottom) feed.scrollTop = feed.scrollHeight;
+    }
+    function connect() {
+        const es = new EventSource('/api/logs/stream');
+        es.onopen = () => { if (statusEl) statusEl.textContent = 'live'; };
+        es.onmessage = (ev) => append(ev.data);
+        es.onerror = () => { if (statusEl) statusEl.textContent = 'reconnecting…'; };
+    }
+    if (copyBtn) copyBtn.addEventListener('click', async function () {
+        try {
+            await navigator.clipboard.writeText(feed.textContent);
+            copyBtn.textContent = 'Copied';
+            setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+        } catch {
+            // Clipboard API needs a secure context — fall back to selecting the
+            // text so the user can Ctrl+C it manually.
+            const r = document.createRange();
+            r.selectNodeContents(feed);
+            const sel = window.getSelection();
+            sel.removeAllRanges();
+            sel.addRange(r);
+        }
+    });
+    if (clearBtn) clearBtn.addEventListener('click', () => { feed.textContent = ''; });
+    connect();
+})();
 </script>
 
 {% endblock %}

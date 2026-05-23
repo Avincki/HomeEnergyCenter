@@ -9,14 +9,16 @@
 (() => {
     "use strict";
 
-    // Price bars: muted grey when injection price is positive, light green
+    // Price bars: muted grey when injection price is positive, bright green
     // when negative. Bar heights are plotted as |price| so negative hours
     // still rise from zero — the sign is conveyed by colour, not direction.
+    // The negative bars are the ones the user acts on, so they're drawn at
+    // near-full opacity (and full width — see priceBorderWidths) to stand out.
     const COLOR_PRICE_POS = "rgba(148, 163, 184, 0.55)";
-    const COLOR_PRICE_NEG = "rgba(134, 239, 172, 0.75)";
-    // SoC: brighter green-400 instead of green-500 — pops against the muted
-    // gray price bars and the translucent orange solar fill.
-    const COLOR_SOC = "#4ade80";
+    const COLOR_PRICE_NEG = "rgba(74, 222, 128, 0.95)";
+    // SoC: blue-400 — pops against the muted gray price bars, the green
+    // negative-price bars, and the translucent orange solar fill.
+    const COLOR_SOC = "#60a5fa";
     // Halo drawn underneath the SoC line so it stays legible where it crosses
     // bars or the solar fill.
     const COLOR_SOC_HALO = "rgba(2, 6, 23, 0.85)";
@@ -262,7 +264,7 @@
 
     function buildChartData(prices, readings, solarPoints) {
         // Bars plot |price| so negative hours rise from zero like positive
-        // ones; sign is conveyed by colour (red = positive, green = negative).
+        // ones; sign is conveyed by colour (grey = positive, green = negative).
         // _raw carries the signed value through to the tooltip.
         const priceBars = prices.map(p => ({
             x: new Date(p.timestamp).valueOf(),
@@ -271,6 +273,12 @@
         }));
         const priceColors = prices.map(p =>
             p.injection_eur_per_kwh < 0 ? COLOR_PRICE_NEG : COLOR_PRICE_POS
+        );
+        // Positive bars keep the 3 px transparent border that slims them;
+        // negative (green) bars drop it to 0 so they render full-width and
+        // stay clearly visible.
+        const priceBorderWidths = prices.map(p =>
+            p.injection_eur_per_kwh < 0 ? 0 : 3
         );
 
         // Keep readings without a SoC sample but emit a null y so the line
@@ -303,7 +311,7 @@
             };
         });
 
-        return { priceBars, priceColors, socLine, solarLine, totalSolarLine };
+        return { priceBars, priceColors, priceBorderWidths, socLine, solarLine, totalSolarLine };
     }
 
     function renderCombined(canvas, prices, readings, solarPoints) {
@@ -313,7 +321,7 @@
         endOfDay.setDate(endOfDay.getDate() + 1);
         const dayLabel = fmtDateYMD(startOfDay);
 
-        const { priceBars, priceColors, socLine, solarLine, totalSolarLine } =
+        const { priceBars, priceColors, priceBorderWidths, socLine, solarLine, totalSolarLine } =
             buildChartData(prices, readings, solarPoints);
 
         return new Chart(canvas, {
@@ -324,11 +332,11 @@
                         label: "Injection €/kWh",
                         data: priceBars,
                         backgroundColor: priceColors,
-                        // Transparent border eats 2 px from each side of the
-                        // bar — keeps the slim look we had before the colour
-                        // refactor without re-adding a visible outline.
+                        // Transparent border eats into each side of the bar to
+                        // slim it — kept for positive hours, set to 0 for
+                        // negative (green) ones so they render full-width.
                         borderColor: "transparent",
-                        borderWidth: 3,
+                        borderWidth: priceBorderWidths,
                         yAxisID: "yPrice",
                         // 1 hour wide — matches the price-point hour resolution.
                         barThickness: "flex",
@@ -485,7 +493,7 @@
 
     function updateChart(prices, readings, solarPoints) {
         if (!chart) return;
-        const { priceBars, priceColors, socLine, solarLine, totalSolarLine } =
+        const { priceBars, priceColors, priceBorderWidths, socLine, solarLine, totalSolarLine } =
             buildChartData(prices, readings, solarPoints);
         // Datasets:
         //   0 = price bars
@@ -496,6 +504,7 @@
         //   5 = SoC line
         chart.data.datasets[0].data = priceBars;
         chart.data.datasets[0].backgroundColor = priceColors;
+        chart.data.datasets[0].borderWidth = priceBorderWidths;
         chart.data.datasets[1].data = solarLine;
         chart.data.datasets[2].data = totalSolarLine;
         chart.data.datasets[3].data = totalSolarLine;

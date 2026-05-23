@@ -23,11 +23,14 @@ Strategy (solar daytime only — night rules are a later phase):
   0; the measured-import down-tick is the backstop. This is what
   makes 3-phase charging (6 A ≈ 4.1 kW minimum) actually engage — pure solar
   export rarely clears that floor.
-* Up-tick the setpoint when the signal exceeds ``export_threshold_w``; down-tick
-  when *measured* grid import exceeds ``import_threshold_w``. The down-tick is on
-  real import (not the virtual signal) and takes priority, so a wrong reserve
-  estimate or a battery sitting at its floor can never push us into a sustained
-  grid import.
+* Up-tick the setpoint when the signal exceeds ``export_threshold_w``. Down-tick
+  on either of two conditions: *measured* grid import over ``import_threshold_w``
+  (the hard backstop against a wrong estimate driving real import — takes
+  priority), or the battery discharging more than ``import_threshold_w`` **past**
+  its tapered cap (a big house load that the battery, not the grid, is covering —
+  import stays ~0 yet the battery drains hard). The over-discharge down-tick
+  mirrors the up-tick, so the setpoint settles where the battery discharges ~= the
+  tapered cap.
 * The charge envelope is {0 (pause)} or [min_charge_a..max_charge_a]; below the
   minimum the charger pauses, and resumes only when the signal covers that
   minimum draw (so resuming doesn't immediately import and flap).
@@ -198,10 +201,17 @@ class ChargerController:
         )
         reserve_w = max(0.0, tapered_cap - inp.battery_power_w)
         signal_w = export_w + reserve_w
+        # Mirror of the reserve for the down-tick: how far the battery is
+        # discharging *beyond* its tapered cap. The grid-import down-tick can't
+        # see this — when a big house load is covered by the battery (not the
+        # grid), import stays ~0 while the battery drains hard — so the car backs
+        # off on over-discharge too. Symmetric with the up-tick, so the setpoint
+        # settles where the battery discharges ~= the tapered cap.
+        over_discharge_w = max(0.0, inp.battery_power_w - tapered_cap)
 
         if self._target_a < cfg.min_charge_a:
             return self._maybe_resume(import_w, signal_w)
-        return self._track(import_w, signal_w, inp.actual_current_a)
+        return self._track(import_w, signal_w, over_discharge_w, inp.actual_current_a)
 
     # ----- helpers -----------------------------------------------------------
 
@@ -238,12 +248,24 @@ class ChargerController:
             f"paused: signal {signal_w:.0f} W < resume {cfg.resume_surplus_threshold_w:.0f} W",
         )
 
-    def _track(self, import_w: float, signal_w: float, actual_a: float | None) -> ChargerCommand:
+    def _track(
+        self,
+        import_w: float,
+        signal_w: float,
+        over_discharge_w: float,
+        actual_a: float | None,
+    ) -> ChargerCommand:
         cfg = self.config
         target = self._target_a
         if import_w > cfg.import_threshold_w:
             target -= cfg.step_a
             reason = f"import {import_w:.0f} W > {cfg.import_threshold_w:.0f} W"
+        elif over_discharge_w > cfg.import_threshold_w:
+            target -= cfg.step_a
+            reason = (
+                f"battery over-discharging {over_discharge_w:.0f} W past tapered "
+                f"cap > {cfg.import_threshold_w:.0f} W"
+            )
         elif signal_w > cfg.export_threshold_w and self._may_increase(actual_a):
             target += cfg.step_a
             reason = f"signal {signal_w:.0f} W > {cfg.export_threshold_w:.0f} W"

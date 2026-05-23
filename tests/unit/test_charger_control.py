@@ -115,11 +115,28 @@ def test_resume_blocked_while_importing() -> None:
 def test_uptick_on_surplus_while_drawing() -> None:
     ctrl = ChargerController(_config())
     ctrl._target_a = 10.0  # white-box: pretend mid-session
-    cmd = ctrl.decide(_inputs(grid_power_w=-600.0, battery_power_w=9000.0, actual_current_a=10.0))
-    # export 600 alone clears the 500 W export threshold (battery already
-    # discharging past its tapered cap -> remaining reserve 0), and the car is
-    # drawing near the command -> +1 A.
+    # export 600 + the SoC-taper reserve (battery idle at 50%) clears the 500 W
+    # export threshold, and the car is drawing near the command -> +1 A.
+    cmd = ctrl.decide(_inputs(grid_power_w=-600.0, battery_power_w=0.0, actual_current_a=10.0))
     assert not cmd.paused and cmd.target_a == 11.0
+
+
+def test_downtick_when_battery_over_discharging_beyond_cap() -> None:
+    # Big house load: the battery discharges far past its SoC-tapered cap to
+    # cover it while grid import stays ~0 (the battery, not the grid, absorbs the
+    # deficit). The car is over-drawing on the battery, so it down-ticks even
+    # though measured grid import is below the threshold.
+    ctrl = ChargerController(_config())  # cap(50%) = 9000*(50-30)/70 ~= 2571 W
+    ctrl._target_a = 8.0
+    cmd = ctrl.decide(
+        _inputs(
+            grid_power_w=58.0,  # ~0 grid — battery covers the load
+            battery_power_w=6034.0,  # discharging ~3.5 kW past the cap
+            battery_soc_pct=50.0,
+            actual_current_a=7.4,
+        )
+    )
+    assert not cmd.paused and cmd.target_a == 7.0  # -1 A despite import < threshold
 
 
 def test_downtick_on_real_import_takes_priority() -> None:

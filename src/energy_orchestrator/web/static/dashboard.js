@@ -246,18 +246,23 @@
     // Charger-control decision, shown in the Etrel column of the state card so
     // it mirrors SolarEdge's rule/reason/when on the left: the rule engine's
     // latest charger command (target current or "Paused"), the descriptive
-    // reason, and the decision time. The whole block is hidden when charger
-    // control is inactive (state.charger is null), leaving just the live Etrel
-    // device status above it. A "dry-run" badge shows while the engine logs
-    // decisions without writing to the charger.
+    // reason, and the decision time. The Rule line stays visible even when
+    // there's no live decision — charger control disabled, outside solar
+    // daytime, essential inputs missing, or nothing computed yet all surface a
+    // fallback reason rather than hiding, like SolarEdge's always-visible card.
+    // (The whole Etrel column is hidden only when the charger isn't configured
+    // at all — handled by applyEtrelStateLine.) A "dry-run" badge shows while
+    // the engine logs decisions without writing to the charger.
     function applyChargerControlDecision(state) {
         const c = state && state.charger;
-        const blockIds = ["state-charger-action", "state-charger-reason", "state-charger-when"];
         if (!c) {
-            blockIds.forEach((id) => setHidden(id, true));
+            setText("state-charger-target", "—");
+            setText("state-charger-reason", "charger control inactive or no decision yet");
+            setText("state-charger-when", "");
+            setHidden("state-charger-when", true);
+            setHidden("state-charger-dry-run", true);
             return;
         }
-        blockIds.forEach((id) => setHidden(id, false));
         const target = c.paused
             ? "Paused"
             : (c.target_a != null ? `Charging ${c.target_a.toFixed(0)} A` : "—");
@@ -265,6 +270,7 @@
         setText("state-charger-reason", c.reason || "—");
         setText("state-charger-when",
             c.timestamp ? `decided ${fmtTimeFull(c.timestamp)}` : "");
+        setHidden("state-charger-when", !c.timestamp);
         setHidden("state-charger-dry-run", !c.dry_run);
     }
 

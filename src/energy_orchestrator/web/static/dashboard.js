@@ -243,23 +243,29 @@
             etrel.custom_max_a != null ? Math.round(etrel.custom_max_a) : "—");
     }
 
-    // Charger-control decision tile: the rule engine's latest charger command
-    // (target current or "Paused") plus the reason and decision time. Hidden
-    // when charger control is inactive (state.charger is null). A "dry-run"
-    // badge shows while it logs decisions without writing to the charger.
-    function applyChargerControlTile(state) {
-        const tile = document.getElementById("tile-charger-control");
-        if (!tile) return;
+    // Charger-control decision, shown in the Etrel column of the state card so
+    // it mirrors SolarEdge's rule/reason/when on the left: the rule engine's
+    // latest charger command (target current or "Paused"), the descriptive
+    // reason, and the decision time. The whole block is hidden when charger
+    // control is inactive (state.charger is null), leaving just the live Etrel
+    // device status above it. A "dry-run" badge shows while the engine logs
+    // decisions without writing to the charger.
+    function applyChargerControlDecision(state) {
         const c = state && state.charger;
-        if (!c) { tile.hidden = true; return; }
-        tile.hidden = false;
+        const blockIds = ["state-charger-action", "state-charger-reason", "state-charger-when"];
+        if (!c) {
+            blockIds.forEach((id) => setHidden(id, true));
+            return;
+        }
+        blockIds.forEach((id) => setHidden(id, false));
         const target = c.paused
             ? "Paused"
-            : (c.target_a != null ? `${c.target_a.toFixed(0)} A` : "—");
-        setText("tile-charger-target", target);
-        const when = c.timestamp ? ` · ${fmtTimeShort(c.timestamp)}` : "";
-        setText("tile-charger-reason", (c.reason || "—") + when);
-        setHidden("charger-dry-run", !c.dry_run);
+            : (c.target_a != null ? `Charging ${c.target_a.toFixed(0)} A` : "—");
+        setText("state-charger-target", target);
+        setText("state-charger-reason", c.reason || "—");
+        setText("state-charger-when",
+            c.timestamp ? `decided ${fmtTimeFull(c.timestamp)}` : "");
+        setHidden("state-charger-dry-run", !c.dry_run);
     }
 
     function buildChartData(prices, readings, solarPoints) {
@@ -546,7 +552,7 @@
         setText("tile-house", fmtInt(reading.house_consumption_w, " W"));
         applyChargerTile(state, reading);
         applyEtrelStateLine(state);
-        applyChargerControlTile(state);
+        applyChargerControlDecision(state);
         applySolarTile(reading.small_solar_w, reading.large_solar_w);
         setText("tile-grid", fmtInt(neg(reading.grid_feed_in_w), " W"));
 

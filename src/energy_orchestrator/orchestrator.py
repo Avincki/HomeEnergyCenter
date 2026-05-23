@@ -324,13 +324,20 @@ class TickLoop:
                     )
                     self._last_decision_at = when
 
-                    if record.state_changed:
-                        logger.info(
-                            "decision state changed",
-                            state=record.state.value,
-                            rule=record.rule_fired,
-                            manual_override=record.manual_override,
-                        )
+                    # Descriptive per-decision log, mirroring the charger-control
+                    # line in _run_charger_control so both decision domains leave
+                    # a "what rule fired and why" trail in the log on every tick,
+                    # not only on state changes. state_changed flags the ON/OFF
+                    # transitions for anyone grepping just the moves.
+                    logger.info(
+                        "solaredge decision",
+                        state=record.state.value,
+                        rule=record.rule_fired,
+                        reason=record.reason,
+                        state_changed=record.state_changed,
+                        manual_override=record.manual_override,
+                        forecast_end_soc_pct=record.forecast_end_soc_pct,
+                    )
 
                     if not self.config.decision.dry_run and self._needs_actuation(
                         record.state, solar_r

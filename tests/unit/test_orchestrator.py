@@ -327,6 +327,45 @@ async def test_adopt_manual_charger_target(
     assert loop._charger.target_a == 11.0
 
 
+async def test_kick_start_is_throttled(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    config = _config_with_charger(tmp_path).model_copy(
+        update={"charger_control": ChargerControlConfig(enabled=True, dry_run=False)}
+    )
+    loop = TickLoop(config, session_factory, OverrideController(), PriceCache(), SolarCache())
+    assert loop._charger is not None
+    loop._charger._target_a = 6.0  # commanding a charge
+
+    writes: list[float] = []
+
+    async def fake_set(amps: float) -> None:
+        writes.append(amps)
+
+    client = loop.etrel_client
+    assert client is not None
+    client.set_charging_current_a = fake_set  # type: ignore[method-assign]
+
+    # Applied setpoint clamped to 0 with the car not drawing -> stalled.
+    stalled = DeviceReading(device_id="etrel", data={"setpoint_a": 0.0, "current_l1_a": 0.0})
+    t0 = datetime(2026, 5, 24, 12, 0, tzinfo=UTC)
+
+    await loop._kick_charger_if_stalled(t0, stalled)
+    assert writes == [6.0]  # first kick fires
+    # 30 s later (< 90 s throttle) -> no extra write.
+    await loop._kick_charger_if_stalled(t0 + timedelta(seconds=30), stalled)
+    assert writes == [6.0]
+    # 100 s after the first kick (> 90 s) -> re-asserts.
+    await loop._kick_charger_if_stalled(t0 + timedelta(seconds=100), stalled)
+    assert writes == [6.0, 6.0]
+    # Car starts drawing -> stall clears; no further kicks, throttle resets.
+    drawing = DeviceReading(device_id="etrel", data={"setpoint_a": 6.0, "current_l1_a": 6.0})
+    await loop._kick_charger_if_stalled(t0 + timedelta(seconds=130), drawing)
+    assert writes == [6.0, 6.0]
+    assert loop._charger_last_kick_at is None  # reset when the stall cleared
+
+
 async def test_adopt_manual_charger_target_noop_when_inactive(
     tmp_path: Path,
     session_factory: async_sessionmaker[AsyncSession],

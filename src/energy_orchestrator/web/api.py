@@ -451,19 +451,43 @@ async def get_solar(
 
 
 @router.get("/logs/stream")
-async def stream_logs(request: Request, config: ConfigDep) -> StreamingResponse:
+async def stream_logs(
+    request: Request,
+    config: ConfigDep,
+    replay_hours: Annotated[float | None, Query(gt=0.0, le=720.0)] = None,
+) -> StreamingResponse:
     """Server-sent-event stream of the rotating JSON log file.
 
     Each SSE ``data:`` event carries one log line (already JSON). Client
-    parses it and renders. On connect we replay only lines from the current
-    server session (anything timestamped at or after ``app.state.session_started_at``),
-    then follow new lines as they appear, reopening the file if the rotating
-    handler swaps it out.
+    parses it and renders, then follows new lines as they appear (reopening
+    the file if the rotating handler swaps it out).
+
+    The replay window on connect depends on ``replay_hours``:
+
+    * **unset (default)** — replay only the current server session (lines at
+      or after ``app.state.session_started_at``). This is what the ``/logs``
+      page wants: a clean view of the running process.
+    * **set** — replay at least the last ``replay_hours`` hours, spanning a
+      restart if one happened inside that window. The debug "Rule decisions"
+      panel uses this so a mid-run restart doesn't wipe the decision history.
+      We take the *earlier* of (session start, now - replay_hours) so the
+      window is never shorter than either the running session or the request.
+
+    Note: the replay can only reach as far back as the *current* log file —
+    if size-based rotation moved older lines to ``.log.1`` within the window,
+    the replay starts at the current file's first line.
     """
     log_path = Path(config.logging.log_dir) / "energy_orchestrator.log"
     session_started_at: datetime = request.app.state.session_started_at
+    if replay_hours is None:
+        replay_since = session_started_at
+    else:
+        replay_since = min(
+            session_started_at,
+            datetime.now(UTC) - timedelta(hours=replay_hours),
+        )
     return StreamingResponse(
-        _tail_log_sse(request, log_path, session_started_at),
+        _tail_log_sse(request, log_path, replay_since),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
@@ -472,8 +496,8 @@ async def stream_logs(request: Request, config: ConfigDep) -> StreamingResponse:
 _POLL_INTERVAL_S = 0.4
 
 
-def _line_in_session(line: str, session_started_at: datetime) -> bool:
-    """True if a JSON log line's timestamp is at/after the session start.
+def _line_at_or_after(line: str, replay_since: datetime) -> bool:
+    """True if a JSON log line's timestamp is at/after ``replay_since``.
 
     Non-JSON lines or lines without a parseable timestamp are kept (rare —
     they shouldn't appear in our structured log, and dropping them would hide
@@ -492,11 +516,11 @@ def _line_in_session(line: str, session_started_at: datetime) -> bool:
         return True
     if ts.tzinfo is None:
         ts = ts.replace(tzinfo=UTC)
-    return ts >= session_started_at
+    return ts >= replay_since
 
 
 async def _tail_log_sse(
-    request: Request, log_path: Path, session_started_at: datetime
+    request: Request, log_path: Path, replay_since: datetime
 ) -> AsyncIterator[str]:
     # Wait for the file to exist (first run before any logs have been written).
     while not await asyncio.to_thread(log_path.exists):
@@ -506,15 +530,15 @@ async def _tail_log_sse(
 
     f = await asyncio.to_thread(open, log_path, "r", encoding="utf-8", errors="replace")
     try:
-        # Replay from the start, skipping lines older than the current session.
-        # Once we reach EOF we transition to live tailing; new lines necessarily
-        # belong to this session, so the timestamp filter is a no-op from then on.
+        # Replay from the start, skipping lines older than the replay window.
+        # Once we reach EOF we transition to live tailing; new lines are always
+        # newer than the window, so the timestamp filter is a no-op from then on.
         while True:
             if await request.is_disconnected():
                 return
             line = await asyncio.to_thread(f.readline)
             if line:
-                if _line_in_session(line, session_started_at):
+                if _line_at_or_after(line, replay_since):
                     yield f"data: {line.rstrip()}\n\n"
                 continue
 

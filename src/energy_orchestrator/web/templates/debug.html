@@ -55,8 +55,9 @@
     <h2>Rule decisions (live) <span id="decision-status" class="hint">connecting&hellip;</span></h2>
     <p class="hint">
         Every SolarEdge and Etrel charger decision as it happens, with all the
-        values the rule saw &mdash; streamed from this server session's log.
-        Hit <strong>Copy</strong> to grab the whole feed for a bug report.
+        values the rule saw &mdash; replaying at least the last 6 hours (across a
+        restart, if any) then following live. Hit <strong>Copy</strong> to grab
+        the whole feed for a bug report.
     </p>
     <div class="log-controls">
         <button id="decision-copy" type="button">Copy</button>
@@ -107,6 +108,9 @@ document.getElementById('clear-errors').addEventListener('click', async function
 (function () {
     const DECISION_EVENTS = new Set(['solaredge decision', 'charger control decision']);
     const MAX_LINES = 2000;
+    // Replay at least this many hours on connect so a mid-run restart doesn't
+    // wipe the decision history; the server spans the restart within the window.
+    const REPLAY_HOURS = 6;
     const feed = document.getElementById('decision-feed');
     const statusEl = document.getElementById('decision-status');
     const copyBtn = document.getElementById('decision-copy');
@@ -140,7 +144,7 @@ document.getElementById('clear-errors').addEventListener('click', async function
         if (atBottom) feed.scrollTop = feed.scrollHeight;
     }
     function connect() {
-        const es = new EventSource('/api/logs/stream');
+        const es = new EventSource('/api/logs/stream?replay_hours=' + REPLAY_HOURS);
         es.onopen = () => { if (statusEl) statusEl.textContent = 'live'; };
         es.onmessage = (ev) => append(ev.data);
         es.onerror = () => { if (statusEl) statusEl.textContent = 'reconnecting…'; };

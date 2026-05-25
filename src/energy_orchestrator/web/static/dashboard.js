@@ -903,6 +903,53 @@
         return `Write failed: ${data.write_error || "unknown"} · ${readbackTxt}`;
     }
 
+    // SolarEdge tile probe button: POST /api/solaredge/test-toggle, which
+    // writes the inverter's active-power-limit register directly (0 %/100 %),
+    // bypassing the engine and dry-run, so the user can confirm the hardware
+    // physically obeys curtailment. Not sticky — the tick loop re-asserts the
+    // engine's decision on its next decision tick when dry-run is off.
+    function wireSolarEdgeTestControl() {
+        const btn = document.getElementById("se-toggle-btn");
+        const status = document.getElementById("se-test-status");
+        if (!btn) return;
+
+        btn.addEventListener("click", async () => {
+            btn.disabled = true;
+            if (status) status.textContent = "Sending…";
+            try {
+                const resp = await fetch("/api/solaredge/test-toggle", { method: "POST" });
+                if (!resp.ok) {
+                    const detail = await resp.text();
+                    throw new Error(`HTTP ${resp.status}: ${detail}`);
+                }
+                const data = await resp.json();
+                if (status) status.textContent = formatSolarEdgeTestResult(data);
+            } catch (e) {
+                if (status) status.textContent = `Failed: ${e.message}`;
+            } finally {
+                btn.disabled = false;
+            }
+        });
+    }
+
+    // Render the structured /api/solaredge/test-toggle response as a one-liner.
+    //   1. Write OK, register reads the target → "Sent OFF (0 %) · register now 0 %".
+    //      If the panels keep producing despite this, Advanced Power Control
+    //      isn't committed on the inverter (writes land but aren't enforced).
+    //   2. Write failed (read-back mismatch / unreachable) → "Tried … write failed: …".
+    function formatSolarEdgeTestResult(data) {
+        const stateTxt = String(data.target_state || "").toUpperCase();
+        const target = data.target_pct;
+        const after = data.active_power_limit_pct_after;
+        const readbackTxt = data.readback_error
+            ? `readback failed: ${data.readback_error}`
+            : (after != null ? `register now ${after} %` : "register —");
+        if (data.write_succeeded) {
+            return `Sent ${stateTxt} (${target} %) · ${readbackTxt}`;
+        }
+        return `Tried ${stateTxt} (${target} %) · write failed: ${data.write_error || "unknown"} · ${readbackTxt}`;
+    }
+
     async function init() {
         installDateAdapter();
         const canvas = document.getElementById("mainChart");
@@ -910,6 +957,7 @@
 
         wireChartNav();
         wireChargerModeControls();
+        wireSolarEdgeTestControl();
 
         const urls = buildChartUrls();
         let prices = [];

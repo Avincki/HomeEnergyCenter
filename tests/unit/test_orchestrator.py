@@ -155,6 +155,12 @@ class FakeSolarEdge(FakeClient):
         if self._data is not None:
             self._data["active_power_limit_pct"] = float(value)
 
+    async def read_active_power_limit(self) -> int:
+        if self._raise is not None:
+            raise self._raise
+        value = (self._data or {}).get("active_power_limit_pct", 100.0)
+        return int(value)
+
 
 class FakeProvider:
     """Stand-in for PriceProvider; orchestrator only calls fetch_prices + close."""
@@ -606,6 +612,64 @@ async def test_tick_does_not_actuate_when_state_unchanged(
 
     await loop.tick(now=now)
     assert fake_se.write_calls == []  # no flip needed
+
+
+async def test_manual_toggle_curtails_when_producing(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # dry_run=True on purpose: the manual probe bypasses dry_run entirely.
+    config = _config(tmp_path, dry_run=True)
+    loop = TickLoop(config, session_factory, OverrideController(), PriceCache(), SolarCache())
+    fake_se = FakeSolarEdge(data={"active_power_limit_pct": 100.0})
+    loop._solaredge = fake_se  # type: ignore[assignment]
+
+    result = await loop.toggle_solaredge_limit_manual()
+
+    assert fake_se.write_calls == [0]
+    assert result["target_state"] == "off"
+    assert result["target_pct"] == 0
+    assert result["write_succeeded"] is True
+    assert result["active_power_limit_pct_after"] == 0
+    assert result["took"] is True
+
+
+async def test_manual_toggle_releases_when_curtailed(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    config = _config(tmp_path, dry_run=False)
+    loop = TickLoop(config, session_factory, OverrideController(), PriceCache(), SolarCache())
+    fake_se = FakeSolarEdge(data={"active_power_limit_pct": 0.0})
+    loop._solaredge = fake_se  # type: ignore[assignment]
+
+    result = await loop.toggle_solaredge_limit_manual()
+
+    assert fake_se.write_calls == [100]
+    assert result["target_state"] == "on"
+    assert result["took"] is True
+
+
+async def test_manual_toggle_reports_write_failure(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    config = _config(tmp_path, dry_run=False)
+    loop = TickLoop(config, session_factory, OverrideController(), PriceCache(), SolarCache())
+    # Reads still work (register at 100), but the write raises — the probe must
+    # surface this rather than raising, so a dead inverter is visible in the UI.
+    fake_se = FakeSolarEdge(
+        data={"active_power_limit_pct": 100.0},
+        raise_on_write=DeviceConnectionError("inverter unreachable"),
+    )
+    loop._solaredge = fake_se  # type: ignore[assignment]
+
+    result = await loop.toggle_solaredge_limit_manual()
+
+    assert result["target_state"] == "off"
+    assert result["write_succeeded"] is False
+    assert "unreachable" in result["write_error"]
+    assert result["took"] is False  # register still 100, not the 0 we asked for
 
 
 async def test_tick_refreshes_price_cache_when_stale(

@@ -7,6 +7,7 @@ Endpoints (all under ``/api``):
   GET  /health                config + per-source health snapshot
   GET  /prices                today + tomorrow's day-ahead prices from the in-memory cache
   POST /override              { mode, minutes? } — apply or clear override
+  POST /solaredge/test-toggle flip the inverter limit 0%/100% (manual hardware probe)
 """
 
 from __future__ import annotations
@@ -713,6 +714,28 @@ async def _etrel_write_readback(client: EtrelInchClient, amps: float) -> dict[st
         "readback_error": readback_error,
         "took": took,
     }
+
+
+@router.post("/solaredge/test-toggle", dependencies=[Depends(require_same_origin)])
+async def post_solaredge_test_toggle(request: Request) -> dict[str, Any]:
+    """Manually flip the SolarEdge inverter between 0 % and 100 % (operator probe).
+
+    Writes the active-power-limit register DIRECTLY, bypassing the decision
+    engine and ``decision.dry_run``, then reads it back — a "does the inverter
+    actually obey curtailment" test, not a control loop. When ``dry_run`` is
+    false the tick loop re-asserts the engine's decision on its next decision
+    tick, so the flip isn't sticky. Returns 200 with a structured body in all
+    cases; the caller inspects ``write_succeeded`` / ``took`` /
+    ``active_power_limit_pct_after`` to tell "unreachable" from "accepted but
+    ignored".
+    """
+    tick_loop = getattr(request.app.state, "tick_loop", None)
+    if tick_loop is None:
+        raise HTTPException(
+            status_code=503,
+            detail="SolarEdge control unavailable (tick loop not running)",
+        )
+    return await tick_loop.toggle_solaredge_limit_manual()  # type: ignore[no-any-return]
 
 
 @router.post("/charger/mode", dependencies=[Depends(require_same_origin)])

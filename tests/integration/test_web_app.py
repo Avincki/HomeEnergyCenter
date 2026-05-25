@@ -304,6 +304,19 @@ class _FakeTickLoop:
             "active": self.active,
         }
 
+    async def toggle_solaredge_limit_manual(self) -> dict[str, object]:
+        return {
+            "limit_before_pct": 100,
+            "read_before_error": None,
+            "target_pct": 0,
+            "target_state": "off",
+            "write_succeeded": True,
+            "write_error": None,
+            "active_power_limit_pct_after": 0,
+            "readback_error": None,
+            "took": True,
+        }
+
 
 async def test_charger_mode_forced_requires_amps(client: AsyncClient) -> None:
     resp = await client.post("/api/charger/mode", json={"mode": "forced"})
@@ -344,6 +357,26 @@ async def test_charger_mode_forced_then_optimized_ok(client: AsyncClient) -> Non
     assert optimized.json()["mode"] == "optimized"
     assert optimized.json()["forced_amps"] is None
     assert ("forced", 8.0) in fake.calls
+
+
+# ----- API: /api/solaredge/test-toggle -----------------------------------------
+
+
+async def test_solaredge_toggle_503_without_tick_loop(client: AsyncClient) -> None:
+    # The fixture builds the app with start_tick_loop=False -> no tick loop.
+    resp = await client.post("/api/solaredge/test-toggle")
+    assert resp.status_code == 503
+
+
+async def test_solaredge_toggle_ok_with_tick_loop(client: AsyncClient) -> None:
+    client._transport.app.state.tick_loop = _FakeTickLoop(active=True)  # type: ignore[attr-defined]
+    resp = await client.post("/api/solaredge/test-toggle")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["target_state"] == "off"
+    assert body["target_pct"] == 0
+    assert body["write_succeeded"] is True
+    assert body["took"] is True
 
 
 async def test_override_minutes_out_of_range_rejected(client: AsyncClient) -> None:

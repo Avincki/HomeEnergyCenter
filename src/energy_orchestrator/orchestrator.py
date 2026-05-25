@@ -572,6 +572,72 @@ class TickLoop:
             SourceName.SOLAREDGE, {"active_power_limit_pct": target, "actuated": True}
         )
 
+    async def _read_solaredge_limit_safe(self) -> tuple[int | None, str | None]:
+        """Read the active-power-limit register, returning ``(value, error)``
+        instead of raising — used by the manual probe so a read miss is
+        reported rather than turned into a 500."""
+        try:
+            return await self._solaredge.read_active_power_limit(), None
+        except DeviceError as e:
+            return None, str(e)
+        except Exception as e:  # defensive — never let the probe escape
+            logger.exception("unexpected error reading SolarEdge limit")
+            return None, f"unexpected: {e}"
+
+    async def toggle_solaredge_limit_manual(self) -> dict[str, Any]:
+        """Operator probe: flip the inverter's active-power-limit register.
+
+        Writes the SolarEdge active-power-limit register DIRECTLY (0 % or
+        100 %), bypassing the decision engine AND ``decision.dry_run`` — the
+        point is to confirm the inverter physically obeys a Modbus curtailment
+        command, independent of what the engine would do right now. Reads the
+        current limit to pick the direction (producing → curtail to 0 %,
+        already curtailed/unknown → release to 100 %), writes it, reads it
+        back, and returns a structured result.
+
+        Never raises on a device error: the body distinguishes "unreachable"
+        (``write_error`` set) from "accepted but ignored" (``write_succeeded``
+        with the register sitting at the target while the panels keep
+        producing — the *Advanced Power Control not committed* case).
+
+        Not sticky: when ``dry_run`` is false the tick loop re-asserts the
+        engine's decision on its next decision tick, so this is a
+        point-in-time hardware check, not a control surface.
+        """
+        before, read_before_error = await self._read_solaredge_limit_safe()
+        target = _OFF_PCT if (before is None or before >= 50) else _ON_PCT
+
+        write_error: str | None = None
+        try:
+            await self._solaredge.set_active_power_limit(target)
+        except DeviceError as e:
+            write_error = str(e)
+        except Exception as e:  # never let an operator probe surface as a 500
+            logger.exception("unexpected error in manual SolarEdge toggle")
+            write_error = f"unexpected: {e}"
+
+        after, readback_error = await self._read_solaredge_limit_safe()
+        took = after is not None and after == target
+        logger.info(
+            "solaredge manual toggle",
+            limit_before_pct=before,
+            target_pct=target,
+            limit_after_pct=after,
+            write_succeeded=write_error is None,
+            took=took,
+        )
+        return {
+            "limit_before_pct": before,
+            "read_before_error": read_before_error,
+            "target_pct": target,
+            "target_state": "off" if target == _OFF_PCT else "on",
+            "write_succeeded": write_error is None,
+            "write_error": write_error,
+            "active_power_limit_pct_after": after,
+            "readback_error": readback_error,
+            "took": took,
+        }
+
     async def _run_charger_control(
         self,
         when: datetime,

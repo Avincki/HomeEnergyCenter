@@ -289,29 +289,6 @@ class ChargerControlConfig(_StrictModel):
     max_charge_a: float = Field(default=16.0, gt=0.0, le=16.0)
     step_a: float = Field(default=1.0, gt=0.0, le=16.0)
 
-    # --- start-failure backoff (anti-fault) -------------------------------------
-    # Repeatedly offering then withdrawing the AC pilot can latch an EV's onboard
-    # charger into a protective fault (observed 2026-05-24: an EQS faulted and only
-    # a DC fast-charge cleared it — it failed on the Tesla wall box too, so it was
-    # car-side). These knobs stop the controller from cycling a car that isn't
-    # accepting the offer.  [TUNABLE]
-    #
-    # After resuming, allow this long for the car to actually start drawing before
-    # declaring the start failed (the car isn't taking the offer). Also re-armed
-    # whenever the car stops drawing mid-session.
-    start_timeout_s: float = Field(default=120.0, gt=0.0)
-    # Pause at least this long after a failed start before retrying, so we don't
-    # immediately re-offer current the car just refused.
-    failed_start_cooldown_s: float = Field(default=300.0, gt=0.0)
-    # After this many consecutive failed starts, back off for the longer
-    # ``backoff_cooldown_s`` instead — a car that's refusing (faulted / scheduled
-    # off / at its limit) shouldn't be poked every few minutes for hours.
-    max_consecutive_failed_starts: int = Field(default=3, ge=1)
-    backoff_cooldown_s: float = Field(default=1800.0, gt=0.0)
-    # Minimum pause after any ordinary down-tick-to-pause before resuming, so a
-    # marginal surplus can't flap the charger on and off tick-to-tick.
-    resume_cooldown_s: float = Field(default=90.0, ge=0.0)
-
     @model_validator(mode="after")
     def _envelope_consistent(self) -> ChargerControlConfig:
         if self.min_charge_a > self.max_charge_a:

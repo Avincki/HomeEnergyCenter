@@ -95,13 +95,6 @@ _CHARGER_KICK_DRAWING_A = 2.0  # measured L1 current at/above which the car is
 # drawing -> session latched -> stop kicking.
 _CHARGER_KICK_MAX_S = 180.0  # give up re-asserting after this long per episode
 # so a genuinely-declining car isn't poked forever.
-# Re-assert a stalled setpoint at most this often (was: every poll). Each re-write
-# re-offers the AC pilot, and rapid offer/withdraw cycling can latch an EV's
-# onboard charger into a protective fault (observed 2026-05-24 on the EQS), so the
-# kick is throttled well below the poll cadence. The controller's own
-# start-failure backoff drops target below min after start_timeout_s, which ends
-# the kick episode entirely.
-_CHARGER_KICK_MIN_INTERVAL_S = 90.0
 
 # Price-fetch window: yesterday + today + tomorrow (UTC). We pull yesterday
 # too because the dashboard renders prices on a local-time x-axis: in any
@@ -193,9 +186,6 @@ class TickLoop:
         # on it. Both reset when the stall clears.
         self._charger_kick_started_at: datetime | None = None
         self._charger_kick_gave_up: bool = False
-        # When we last re-asserted during the current stall episode, so the kick
-        # fires at most every _CHARGER_KICK_MIN_INTERVAL_S rather than every poll.
-        self._charger_last_kick_at: datetime | None = None
 
         self._task: asyncio.Task[None] | None = None
         self._stop_event = asyncio.Event()
@@ -692,7 +682,6 @@ class TickLoop:
         ):
             self._charger_kick_started_at = None
             self._charger_kick_gave_up = False
-            self._charger_last_kick_at = None
             return
         if self._charger_kick_started_at is None:
             self._charger_kick_started_at = when
@@ -708,18 +697,9 @@ class TickLoop:
                     elapsed_s=round(elapsed, 1),
                 )
             return
-        # Throttle: re-assert at most every _CHARGER_KICK_MIN_INTERVAL_S so a
-        # stalled start can't rapidly cycle the car's pilot (fault risk).
-        throttled = (
-            self._charger_last_kick_at is not None
-            and (when - self._charger_last_kick_at).total_seconds() < _CHARGER_KICK_MIN_INTERVAL_S
-        )
         client = self.etrel_client
-        if throttled or client is None:
+        if client is None:
             return
-        # Mark the attempt before writing so the throttle counts it even if the
-        # write fails (don't fall back to hammering every poll on a flaky link).
-        self._charger_last_kick_at = when
         try:
             await client.set_charging_current_a(desired)
         except DeviceError as e:
@@ -802,7 +782,6 @@ class TickLoop:
                 self._charger_status = None
                 self._charger_kick_started_at = None
                 self._charger_kick_gave_up = False
-                self._charger_last_kick_at = None
         elif cc.enabled and self._etrel is not None and self._solar_provider is not None:
             self._charger = ChargerController(cc)
 

@@ -78,14 +78,6 @@ decision:
 #   min_charge_a: 6               # below this the charger pauses
 #   max_charge_a: 16              # installation hard cap (<= 16 A)
 #   step_a: 1                     # +/- adjustment per decision tick
-#   # Start-failure backoff: repeatedly offering/withdrawing the AC pilot can latch
-#   # an EV's onboard charger into a protective fault, so a car that won't draw is
-#   # backed off rather than cycled.
-#   start_timeout_s: 120          # grace for the car to start drawing after a resume
-#   failed_start_cooldown_s: 300  # pause this long after a failed start before retrying
-#   max_consecutive_failed_starts: 3   # after this many, use the longer backoff below
-#   backoff_cooldown_s: 1800      # long rest once repeated starts keep failing
-#   resume_cooldown_s: 90         # min pause after a down-tick-to-pause (anti-flap)
 
 storage:
   sqlite_path: data/orchestrator.db

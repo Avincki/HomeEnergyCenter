@@ -248,36 +248,6 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                         "charger_control.step_a",
                         hint="±adjustment per decision tick",
                     ),
-                    WebField(
-                        "Start timeout (s)",
-                        "charger_control.start_timeout_s",
-                        hint="after resuming, allow this long for the car to start "
-                        "drawing before declaring the start failed",
-                    ),
-                    WebField(
-                        "Failed-start cooldown (s)",
-                        "charger_control.failed_start_cooldown_s",
-                        hint="pause this long after a failed start before retrying "
-                        "(don't immediately re-offer current the car refused)",
-                    ),
-                    WebField(
-                        "Max consecutive failed starts",
-                        "charger_control.max_consecutive_failed_starts",
-                        hint="after this many in a row, back off for the longer "
-                        "cooldown below instead of retrying every few minutes",
-                    ),
-                    WebField(
-                        "Backoff cooldown (s)",
-                        "charger_control.backoff_cooldown_s",
-                        hint="long rest after repeated failed starts — repeatedly "
-                        "cycling the pilot can fault the car",
-                    ),
-                    WebField(
-                        "Resume cooldown (s)",
-                        "charger_control.resume_cooldown_s",
-                        hint="minimum pause after an ordinary down-tick-to-pause so a "
-                        "marginal surplus can't flap the charger tick-to-tick",
-                    ),
                 ),
             ),
         ),

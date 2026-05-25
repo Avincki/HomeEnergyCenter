@@ -40,17 +40,6 @@ actually drawing near the commanded current — otherwise an unplugged / full /
 externally-clamped car would wind the accumulator to the ceiling and then dump
 full current the moment it could draw.
 
-Start-failure backoff: repeatedly offering then withdrawing the AC pilot can
-latch an EV's onboard charger into a protective fault (observed 2026-05-24 on the
-EQS — it then failed on the Tesla wall box too and only a DC fast-charge cleared
-it). So if the car doesn't begin drawing within ``start_timeout_s`` of a resume
-(or stops drawing mid-session), the controller pauses and refuses to resume for a
-cooldown (``failed_start_cooldown_s``, escalating to ``backoff_cooldown_s`` after
-``max_consecutive_failed_starts``) instead of re-offering on the next tick. An
-ordinary down-tick-to-pause also holds for ``resume_cooldown_s`` so a marginal
-surplus can't flap the charger on/off tick-to-tick. The backoff resets on a real
-draw or when the car detaches (a fresh plug-in session).
-
 Every threshold here is a config knob (``ChargerControlConfig``) — they are
 expected to be tuned empirically during the live-test window, not in code.
 """
@@ -58,7 +47,7 @@ expected to be tuned empirically during the live-test window, not in code.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import structlog
 from astral import Observer
@@ -84,12 +73,6 @@ ATTACHED_CHARGEABLE_STATUS: frozenset[int] = frozenset({1, 2, 3, 4, 5, 6})
 # the few-second pilot ramp after a step, narrow enough to catch a car that
 # isn't drawing at all.
 _DRAW_TRACKING_TOLERANCE_A = 2.0
-
-# Measured L1 current (amps) at/above which the car counts as "actually drawing"
-# — used by the start-failure backoff to tell a real charging session from a
-# commanded-but-idle one. Same magnitude as the orchestrator kick-start's
-# drawing threshold.
-_MIN_DRAWING_CURRENT_A = 2.0
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -161,17 +144,6 @@ class ChargerController:
         # Hysteresis latch for the battery-SoC floor: once disabled by a low
         # SoC we only re-enable above floor + hysteresis, and vice-versa.
         self._soc_enabled: bool = False
-        # --- start-failure backoff state (see _track / _maybe_resume) ----------
-        # When the current "commanding charge but not yet confirmed drawing"
-        # stretch began (UTC). None when paused. Slid forward on every drawing
-        # tick, so it measures *continuous* not-drawing time while commanded.
-        self._offer_since: datetime | None = None
-        # Don't resume before this instant (set after a pause). None == no cooldown.
-        self._cooldown_until: datetime | None = None
-        # Consecutive failed starts this plug-in session; resets on a real draw or
-        # when the car detaches, and escalates the cooldown once it hits the
-        # configured max.
-        self._consecutive_failed_starts: int = 0
 
     @property
     def target_a(self) -> float:
@@ -189,24 +161,15 @@ class ChargerController:
         warrant) instead of fighting it. Returns the clamped value applied.
         """
         self._target_a = _clamp(amps, 0.0, self.config.max_charge_a)
-        # A manual Send is an explicit user action — clear any start-failure
-        # backoff so it isn't immediately blocked. The offer timer re-arms on the
-        # next decide tick, so a manually-commanded car that still won't draw
-        # backs off rather than being cycled forever.
-        self._reset_start_tracking()
         return self._target_a
 
     def decide(self, inp: ChargerInputs) -> ChargerCommand:
         cfg = self.config
-        now = inp.timestamp
 
         # ----- eligibility gates: any failure parks the car (reset to 0) -----
         if not inp.is_daytime:
             return self._pause("outside solar daytime (no night rules yet)")
         if not inp.car_attached:
-            # A detached connector is a fresh plug-in next time — drop any
-            # start-failure backoff so a new session starts from a clean slate.
-            self._reset_start_tracking()
             return self._pause("no chargeable car attached")
         if not self._soc_floor_ok(inp.battery_soc_pct):
             return self._pause(
@@ -247,13 +210,8 @@ class ChargerController:
         over_discharge_w = max(0.0, inp.battery_power_w - tapered_cap)
 
         if self._target_a < cfg.min_charge_a:
-            return self._maybe_resume(now, import_w, signal_w)
-        if self._offer_since is None:
-            # Commanding a charge with no offer timer running (e.g. a manual Send
-            # adopted the target) — stamp it now so the start-failure timeout
-            # applies to manually-commanded sessions too.
-            self._offer_since = now
-        return self._track(now, import_w, signal_w, over_discharge_w, inp.actual_current_a)
+            return self._maybe_resume(import_w, signal_w)
+        return self._track(import_w, signal_w, over_discharge_w, inp.actual_current_a)
 
     # ----- helpers -----------------------------------------------------------
 
@@ -269,65 +227,16 @@ class ChargerController:
 
     def _pause(self, reason: str) -> ChargerCommand:
         self._target_a = 0.0
-        self._offer_since = None
         return ChargerCommand(target_a=0.0, paused=True, reason=reason)
 
-    def _pause_with_cooldown(self, now: datetime, seconds: float, reason: str) -> ChargerCommand:
-        """Pause and refuse to resume for ``seconds`` (anti-flap / anti-fault)."""
-        self._target_a = 0.0
-        self._offer_since = None
-        self._cooldown_until = now + timedelta(seconds=seconds)
-        return ChargerCommand(target_a=0.0, paused=True, reason=reason)
-
-    def _reset_start_tracking(self) -> None:
-        self._offer_since = None
-        self._cooldown_until = None
-        self._consecutive_failed_starts = 0
-
-    def _fail_start(self, now: datetime) -> ChargerCommand:
-        """A commanded car never drew (or stopped) — pause with an escalating
-        cooldown so we don't keep cycling the AC pilot and risk faulting it."""
-        cfg = self.config
-        self._consecutive_failed_starts += 1
-        n = self._consecutive_failed_starts
-        if n >= cfg.max_consecutive_failed_starts:
-            cooldown = cfg.backoff_cooldown_s
-            note = f"backing off {cooldown:.0f}s after {n} failed starts"
-        else:
-            cooldown = cfg.failed_start_cooldown_s
-            note = (
-                f"cooldown {cooldown:.0f}s "
-                f"(failed start {n}/{cfg.max_consecutive_failed_starts})"
-            )
-        return self._pause_with_cooldown(
-            now,
-            cooldown,
-            f"car not drawing {cfg.start_timeout_s:.0f}s after command — {note}",
-        )
-
-    @staticmethod
-    def _is_drawing(actual_a: float | None) -> bool:
-        return actual_a is not None and actual_a >= _MIN_DRAWING_CURRENT_A
-
-    def _maybe_resume(self, now: datetime, import_w: float, signal_w: float) -> ChargerCommand:
+    def _maybe_resume(self, import_w: float, signal_w: float) -> ChargerCommand:
         cfg = self.config
         # Measured import wins over the virtual signal — never resume into a
         # real grid draw (e.g. battery actually at its floor).
         if import_w > cfg.import_threshold_w:
             return ChargerCommand(0.0, True, f"paused: importing {import_w:.0f} W")
-        # Hold off resuming while a start-failure / anti-flap cooldown is active —
-        # this is what stops a refusing car from being cycled tick after tick.
-        if self._cooldown_until is not None and now < self._cooldown_until:
-            remaining = (self._cooldown_until - now).total_seconds()
-            return ChargerCommand(
-                0.0,
-                True,
-                f"paused: cooldown {remaining:.0f}s remaining "
-                f"({self._consecutive_failed_starts} failed start(s))",
-            )
         if signal_w >= cfg.resume_surplus_threshold_w:
             self._target_a = cfg.min_charge_a
-            self._offer_since = now
             return ChargerCommand(
                 cfg.min_charge_a,
                 False,
@@ -341,29 +250,12 @@ class ChargerController:
 
     def _track(
         self,
-        now: datetime,
         import_w: float,
         signal_w: float,
         over_discharge_w: float,
         actual_a: float | None,
     ) -> ChargerCommand:
         cfg = self.config
-        # Start-failure backoff: track continuous not-drawing time while commanded.
-        # A confirmed draw slides the timer and clears the failure count; a
-        # confirmed not-drawing stretch past start_timeout_s means the car isn't
-        # taking the offer (never started, or finished / at its limit) -> back off
-        # instead of cycling the pilot. A missing current read (None) is neither
-        # confirmation, so it neither slides the timer nor trips the backoff.
-        if self._is_drawing(actual_a):
-            self._offer_since = now
-            self._consecutive_failed_starts = 0
-        elif (
-            actual_a is not None
-            and self._offer_since is not None
-            and (now - self._offer_since).total_seconds() >= cfg.start_timeout_s
-        ):
-            return self._fail_start(now)
-
         target = self._target_a
         if import_w > cfg.import_threshold_w:
             target -= cfg.step_a
@@ -394,12 +286,9 @@ class ChargerController:
 
         target = _clamp(target, 0.0, cfg.max_charge_a)
         if target < cfg.min_charge_a:
-            # Hold the pause for resume_cooldown_s so a marginal surplus can't
-            # flap the charger on and off tick-to-tick.
-            return self._pause_with_cooldown(
-                now,
-                cfg.resume_cooldown_s,
-                f"{reason} -> below {cfg.min_charge_a:.0f} A min, pause",
+            self._target_a = 0.0
+            return ChargerCommand(
+                0.0, True, f"{reason} -> below {cfg.min_charge_a:.0f} A min, pause"
             )
         self._target_a = target
         return ChargerCommand(target, False, f"{reason} -> {target:.0f} A")

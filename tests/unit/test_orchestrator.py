@@ -672,6 +672,94 @@ async def test_manual_toggle_reports_write_failure(
     assert result["took"] is False  # register still 100, not the 0 we asked for
 
 
+async def test_manual_toggle_arms_hold_on_success(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # A landed write arms the hold so the tick loop won't reconcile it away
+    # before the operator can watch production respond.
+    config = _config(tmp_path, dry_run=False)
+    loop = TickLoop(config, session_factory, OverrideController(), PriceCache(), SolarCache())
+    loop._solaredge = FakeSolarEdge(data={"active_power_limit_pct": 100.0})  # type: ignore[assignment]
+    assert loop._solaredge_manual_hold_until is None
+
+    result = await loop.toggle_solaredge_limit_manual()
+
+    assert loop._solaredge_manual_hold_until is not None
+    assert result["hold_seconds"] == 60
+
+
+async def test_manual_toggle_write_failure_does_not_arm_hold(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # Nothing to protect if the inverter never took the command.
+    config = _config(tmp_path, dry_run=False)
+    loop = TickLoop(config, session_factory, OverrideController(), PriceCache(), SolarCache())
+    loop._solaredge = FakeSolarEdge(  # type: ignore[assignment]
+        data={"active_power_limit_pct": 100.0},
+        raise_on_write=DeviceConnectionError("inverter unreachable"),
+    )
+
+    result = await loop.toggle_solaredge_limit_manual()
+
+    assert loop._solaredge_manual_hold_until is None
+    assert result["hold_seconds"] == 0
+
+
+async def test_tick_skips_actuation_during_manual_hold(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # Register sits at 0 % (a prior probe curtailed it) and the engine wants ON
+    # (positive injection) — normally _needs_actuation would write 100 % back.
+    # With the manual hold active, the tick must leave the operator's write be.
+    config = _config(tmp_path, dry_run=False)
+    loop = TickLoop(config, session_factory, OverrideController(), PriceCache(), SolarCache())
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    fake_se = FakeSolarEdge(data={"active_power_limit_pct": 0.0})
+    _install_fakes(
+        loop,
+        sonnen=FakeClient(SourceName.SONNEN, data={"soc_pct": 75.0}),
+        car=FakeClient(SourceName.CAR_CHARGER, data={"active_power_w": 0.0}),
+        p1=FakeClient(SourceName.P1_METER, data={"active_power_w": 0.0}),
+        small=FakeClient(SourceName.SMALL_SOLAR, data={"active_power_w": 0.0}),
+        solaredge=fake_se,
+        provider=FakeProvider([_hour_price(now, injection=0.05)]),
+    )
+    loop._solaredge_manual_hold_until = now + timedelta(seconds=30)
+
+    await loop.tick(now=now)
+
+    assert fake_se.write_calls == []  # held — not reconciled back to ON
+
+
+async def test_tick_resumes_actuation_after_hold_lapses(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # Same divergence, but the hold has lapsed — the engine reclaims control and
+    # reconciles the register back to its desired ON state.
+    config = _config(tmp_path, dry_run=False)
+    loop = TickLoop(config, session_factory, OverrideController(), PriceCache(), SolarCache())
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    fake_se = FakeSolarEdge(data={"active_power_limit_pct": 0.0})
+    _install_fakes(
+        loop,
+        sonnen=FakeClient(SourceName.SONNEN, data={"soc_pct": 75.0}),
+        car=FakeClient(SourceName.CAR_CHARGER, data={"active_power_w": 0.0}),
+        p1=FakeClient(SourceName.P1_METER, data={"active_power_w": 0.0}),
+        small=FakeClient(SourceName.SMALL_SOLAR, data={"active_power_w": 0.0}),
+        solaredge=fake_se,
+        provider=FakeProvider([_hour_price(now, injection=0.05)]),
+    )
+    loop._solaredge_manual_hold_until = now - timedelta(seconds=1)
+
+    await loop.tick(now=now)
+
+    assert fake_se.write_calls == [100]  # lapsed — engine reasserts ON
+
+
 async def test_tick_refreshes_price_cache_when_stale(
     tmp_path: Path,
     session_factory: async_sessionmaker[AsyncSession],

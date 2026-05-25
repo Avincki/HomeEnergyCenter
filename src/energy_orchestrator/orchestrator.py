@@ -81,6 +81,17 @@ logger = structlog.stdlib.get_logger(__name__)
 _OFF_PCT = 0
 _ON_PCT = 100
 
+# Manual-probe hold: the "Test ON/OFF" button writes the inverter limit
+# directly, but actuation in the tick loop is driven off the LIVE register read
+# (see ``_needs_actuation``), so the next decision tick reconciles the probe's
+# write straight back to the engine's desired state — within seconds, before an
+# operator can watch production respond. While a probe hold is active the tick
+# loop skips SolarEdge actuation, so the operator's write survives long enough
+# to observe whether the panels physically obey it. Short by design: it's an
+# observation window, not a control surface, and the engine resumes the instant
+# it lapses.
+_SOLAREDGE_MANUAL_HOLD = timedelta(seconds=60)
+
 # Charger setpoint self-heal noise floor (amps): only re-write when the live
 # write-side setpoint differs from the desired value by more than this, so a
 # steady command re-asserts at most once instead of every tick.
@@ -208,6 +219,10 @@ class TickLoop:
         # Gates the history-prune step. None means "fire on the next tick";
         # subsequent prunes are gated by ``_PRUNE_INTERVAL``.
         self._last_prune_at: datetime | None = None
+        # While set (and in the future), the tick loop suppresses SolarEdge
+        # actuation so a manual "Test ON/OFF" probe write survives long enough
+        # to observe. Set by ``toggle_solaredge_limit_manual``; cleared by lapse.
+        self._solaredge_manual_hold_until: datetime | None = None
 
     # ----- lifecycle ----------------------------------------------------------
 
@@ -367,7 +382,15 @@ class TickLoop:
                         forecast_end_soc_pct=record.forecast_end_soc_pct,
                     )
 
-                    if not self.config.decision.dry_run and self._needs_actuation(
+                    if self._solaredge_manual_hold_active(when):
+                        # An operator probe is holding the inverter at its
+                        # manually-written limit; don't reconcile it back yet.
+                        logger.info(
+                            "solaredge actuation held (manual probe)",
+                            hold_until=self._solaredge_manual_hold_until,
+                            desired_state=record.state.value,
+                        )
+                    elif not self.config.decision.dry_run and self._needs_actuation(
                         record.state, solar_r
                     ):
                         await self._actuate_solaredge(record.state)
@@ -535,6 +558,12 @@ class TickLoop:
         except Exception:  # never let history bookkeeping kill the tick
             logger.exception("solar-forecast persistence failed")
 
+    def _solaredge_manual_hold_active(self, when: datetime) -> bool:
+        """True while a manual ``Test ON/OFF`` probe is holding the inverter at
+        its operator-written limit, suppressing engine reconciliation."""
+        until = self._solaredge_manual_hold_until
+        return until is not None and when < until
+
     def _needs_actuation(self, desired: DecisionState, solar_reading: DeviceReading | None) -> bool:
         """True if the inverter's actual active-power-limit register differs
         from the value implied by ``desired``.
@@ -568,6 +597,7 @@ class TickLoop:
             logger.exception("unexpected error actuating SolarEdge")
             await self._record_status_error(SourceName.SOLAREDGE, f"actuation unexpected: {e}")
             return
+        logger.info("solaredge actuated", target_pct=target, state=state.value)
         await self._record_status_success(
             SourceName.SOLAREDGE, {"active_power_limit_pct": target, "actuated": True}
         )
@@ -600,9 +630,12 @@ class TickLoop:
         with the register sitting at the target while the panels keep
         producing — the *Advanced Power Control not committed* case).
 
-        Not sticky: when ``dry_run`` is false the tick loop re-asserts the
-        engine's decision on its next decision tick, so this is a
-        point-in-time hardware check, not a control surface.
+        Holds, briefly: a successful write arms a short actuation hold
+        (``_SOLAREDGE_MANUAL_HOLD``) so the tick loop's self-healing
+        reconciliation doesn't snap the register straight back to the engine's
+        desired state before the operator can watch the panels respond. The
+        hold lapses on its own — this is an observation window, not a control
+        surface — and the engine resumes the instant it does.
         """
         before, read_before_error = await self._read_solaredge_limit_safe()
         target = _OFF_PCT if (before is None or before >= 50) else _ON_PCT
@@ -616,6 +649,13 @@ class TickLoop:
             logger.exception("unexpected error in manual SolarEdge toggle")
             write_error = f"unexpected: {e}"
 
+        # Only arm the hold when the write landed — there's nothing to protect
+        # from reconciliation if the inverter never took the command.
+        hold_until: datetime | None = None
+        if write_error is None:
+            hold_until = datetime.now(UTC) + _SOLAREDGE_MANUAL_HOLD
+            self._solaredge_manual_hold_until = hold_until
+
         after, readback_error = await self._read_solaredge_limit_safe()
         took = after is not None and after == target
         logger.info(
@@ -625,6 +665,7 @@ class TickLoop:
             limit_after_pct=after,
             write_succeeded=write_error is None,
             took=took,
+            hold_until=hold_until,
         )
         return {
             "limit_before_pct": before,
@@ -636,6 +677,7 @@ class TickLoop:
             "active_power_limit_pct_after": after,
             "readback_error": readback_error,
             "took": took,
+            "hold_seconds": int(_SOLAREDGE_MANUAL_HOLD.total_seconds()) if hold_until else 0,
         }
 
     async def _run_charger_control(

@@ -945,7 +945,11 @@
             ? `readback failed: ${data.readback_error}`
             : (after != null ? `register now ${after} %` : "register —");
         if (data.write_succeeded) {
-            return `Sent ${stateTxt} (${target} %) · ${readbackTxt}`;
+            // The write arms a short hold so the engine's self-healing
+            // reconciliation doesn't snap the register back before you can
+            // watch production respond.
+            const holdTxt = data.hold_seconds ? ` · holding ${data.hold_seconds}s` : "";
+            return `Sent ${stateTxt} (${target} %) · ${readbackTxt}${holdTxt}`;
         }
         return `Tried ${stateTxt} (${target} %) · write failed: ${data.write_error || "unknown"} · ${readbackTxt}`;
     }

@@ -23,7 +23,7 @@ from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from energy_orchestrator.config.models import AppConfig
 from energy_orchestrator.data import UnitOfWork
@@ -36,6 +36,7 @@ from energy_orchestrator.data.models import (
     SourceName,
     SourceStatus,
 )
+from energy_orchestrator.decision.charger_control import ChargerMode
 from energy_orchestrator.devices.errors import DeviceError
 from energy_orchestrator.devices.etrel import EtrelInchClient
 from energy_orchestrator.prices import PriceCache
@@ -102,6 +103,23 @@ class EtrelSetCurrentRequest(BaseModel):
     # Higher values are rejected at the API layer regardless of what the
     # charger's installer setting (custom_max_a) reports.
     amps: float = Field(..., ge=0.0, le=16.0)
+
+
+class ChargerModeRequest(BaseModel):
+    """Switch the runtime charger mode from the Etrel tile.
+
+    ``amps`` is required for FORCED (the setpoint to hold) and ignored for
+    OPTIMIZED. The 16 A ceiling is the same hard cap as the manual set-current.
+    """
+
+    mode: ChargerMode
+    amps: float | None = Field(default=None, ge=0.0, le=16.0)
+
+    @model_validator(mode="after")
+    def _forced_needs_amps(self) -> ChargerModeRequest:
+        if self.mode is ChargerMode.FORCED and self.amps is None:
+            raise ValueError("amps is required when mode is 'forced'")
+        return self
 
 
 # ----- serializers -------------------------------------------------------------
@@ -652,33 +670,82 @@ async def post_etrel_set_current(
             status_code=503,
             detail="Etrel client unavailable (tick loop not running)",
         )
-    write_error: str | None = None
-    set_current_a_after: float | None = None
-    readback_error: str | None = None
-    try:
-        await etrel_client.set_charging_current_a(body.amps)
-    except DeviceError as e:
-        write_error = str(e)
-    try:
-        set_current_a_after = await etrel_client.read_set_current_a()
-    except DeviceError as e:
-        readback_error = str(e)
+    result = await _etrel_write_readback(etrel_client, body.amps)
     # If the rule-based controller is running it would overwrite this manual
     # setpoint on its next decision tick. Push the value into it so it adopts
     # the manual target instead of fighting it. Only when the write actually
     # took (ACKed, or readback confirms a silently-applied write).
-    took = write_error is None or (
-        set_current_a_after is not None and abs(set_current_a_after - body.amps) < 0.1
-    )
     controller_target_set = False
     tick_loop = getattr(request.app.state, "tick_loop", None)
-    if tick_loop is not None and took:
+    if tick_loop is not None and result.pop("took"):
         controller_target_set = tick_loop.adopt_manual_charger_target(body.amps)
+    return {**result, "controller_target_set": controller_target_set}
+
+
+async def _etrel_write_readback(client: EtrelInchClient, amps: float) -> dict[str, Any]:
+    """Write the set-current setpoint then read it back, never raising.
+
+    Etrel firmware variants apply a write while dropping the ACK, so the
+    readback — attempted even when the write raised — is the only reliable
+    signal of whether it took. Returns the structured outcome plus ``took``
+    (ACKed, or the readback confirms a silently-applied write) for callers that
+    need to decide follow-up actions.
+    """
+    write_error: str | None = None
+    set_current_a_after: float | None = None
+    readback_error: str | None = None
+    try:
+        await client.set_charging_current_a(amps)
+    except DeviceError as e:
+        write_error = str(e)
+    try:
+        set_current_a_after = await client.read_set_current_a()
+    except DeviceError as e:
+        readback_error = str(e)
+    took = write_error is None or (
+        set_current_a_after is not None and abs(set_current_a_after - amps) < 0.1
+    )
     return {
-        "amps_requested": body.amps,
+        "amps_requested": amps,
         "write_succeeded": write_error is None,
         "write_error": write_error,
         "set_current_a_after": set_current_a_after,
         "readback_error": readback_error,
-        "controller_target_set": controller_target_set,
+        "took": took,
     }
+
+
+@router.post("/charger/mode", dependencies=[Depends(require_same_origin)])
+async def post_charger_mode(
+    request: Request,
+    body: ChargerModeRequest,
+    etrel_client: EtrelClientDep,
+) -> dict[str, Any]:
+    """Switch the runtime charger mode (Etrel tile Force / Optimized buttons).
+
+    FORCED records the operator setpoint as sticky (held regardless of solar,
+    daytime, or battery SoC; capped at 16 A) and does an immediate write +
+    readback so the car starts now rather than on the next tick. OPTIMIZED hands
+    control back to the rule engine. Requires charger control to be enabled
+    (``charger_control.enabled``); otherwise there is no controller for the mode
+    to act on and we return 409.
+    """
+    tick_loop = getattr(request.app.state, "tick_loop", None)
+    if tick_loop is None:
+        raise HTTPException(
+            status_code=503, detail="Charger control unavailable (tick loop not running)"
+        )
+    state = tick_loop.set_charger_mode(body.mode, body.amps)
+    if not state["active"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Charger control is disabled — enable it to use Optimized/Forced modes",
+        )
+    response: dict[str, Any] = {"mode": state["mode"], "forced_amps": state["forced_amps"]}
+    # Immediate write for instant feedback when forcing; OPTIMIZED lets the rule
+    # engine actuate on its next tick.
+    if body.mode is ChargerMode.FORCED and etrel_client is not None:
+        write = await _etrel_write_readback(etrel_client, state["forced_amps"])
+        write.pop("took", None)
+        response.update(write)
+    return response

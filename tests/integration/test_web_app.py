@@ -285,6 +285,67 @@ async def test_override_invalid_mode_rejected(client: AsyncClient) -> None:
     assert resp.status_code == 422
 
 
+# ----- API: /api/charger/mode --------------------------------------------------
+
+
+class _FakeTickLoop:
+    """Minimal stand-in for the tick loop's charger-mode surface."""
+
+    def __init__(self, *, active: bool = True) -> None:
+        self.active = active
+        self.calls: list[tuple[str, float | None]] = []
+
+    def set_charger_mode(self, mode: object, amps: float | None = None) -> dict[str, object]:
+        self.calls.append((str(mode), amps))
+        forced = str(mode) == "forced"
+        return {
+            "mode": str(mode),
+            "forced_amps": (amps if forced else None),
+            "active": self.active,
+        }
+
+
+async def test_charger_mode_forced_requires_amps(client: AsyncClient) -> None:
+    resp = await client.post("/api/charger/mode", json={"mode": "forced"})
+    assert resp.status_code == 422
+
+
+async def test_charger_mode_rejects_over_16a(client: AsyncClient) -> None:
+    resp = await client.post("/api/charger/mode", json={"mode": "forced", "amps": 20})
+    assert resp.status_code == 422
+
+
+async def test_charger_mode_rejects_invalid_mode(client: AsyncClient) -> None:
+    resp = await client.post("/api/charger/mode", json={"mode": "bogus"})
+    assert resp.status_code == 422
+
+
+async def test_charger_mode_503_without_tick_loop(client: AsyncClient) -> None:
+    # The fixture builds the app with start_tick_loop=False -> no tick loop.
+    resp = await client.post("/api/charger/mode", json={"mode": "optimized"})
+    assert resp.status_code == 503
+
+
+async def test_charger_mode_409_when_charger_disabled(client: AsyncClient) -> None:
+    client._transport.app.state.tick_loop = _FakeTickLoop(active=False)  # type: ignore[attr-defined]
+    resp = await client.post("/api/charger/mode", json={"mode": "optimized"})
+    assert resp.status_code == 409
+
+
+async def test_charger_mode_forced_then_optimized_ok(client: AsyncClient) -> None:
+    fake = _FakeTickLoop(active=True)
+    client._transport.app.state.tick_loop = fake  # type: ignore[attr-defined]
+    forced = await client.post("/api/charger/mode", json={"mode": "forced", "amps": 8})
+    assert forced.status_code == 200
+    assert forced.json()["mode"] == "forced"
+    assert forced.json()["forced_amps"] == 8.0
+    optimized = await client.post("/api/charger/mode", json={"mode": "optimized"})
+    assert optimized.status_code == 200
+    assert optimized.json()["mode"] == "optimized"
+    assert optimized.json()["forced_amps"] is None
+    assert ("forced", 8.0) in fake.calls
+
+
 async def test_override_minutes_out_of_range_rejected(client: AsyncClient) -> None:
     resp = await client.post("/api/override", json={"mode": "force_on", "minutes": 0})
     assert resp.status_code == 422
@@ -387,5 +448,6 @@ async def test_openapi_includes_all_endpoints(client: AsyncClient) -> None:
         "/api/health",
         "/api/prices",
         "/api/override",
+        "/api/charger/mode",
     ):
         assert path in paths

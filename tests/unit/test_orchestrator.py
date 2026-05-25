@@ -38,6 +38,7 @@ from energy_orchestrator.data import (
     create_session_factory,
     init_schema,
 )
+from energy_orchestrator.decision.charger_control import ChargerMode
 from energy_orchestrator.devices import DeviceReading
 from energy_orchestrator.devices.errors import DeviceConnectionError
 from energy_orchestrator.orchestrator import (
@@ -336,6 +337,106 @@ async def test_adopt_manual_charger_target_noop_when_inactive(
     )
     assert loop._charger is None
     assert loop.adopt_manual_charger_target(11.0) is False
+
+
+async def test_set_charger_mode_forced_clamps_and_seeds(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    loop = TickLoop(
+        _config_with_charger(tmp_path),
+        session_factory,
+        OverrideController(),
+        PriceCache(),
+        SolarCache(),
+    )
+    assert loop._charger is not None
+    # Over the 16 A installation cap -> clamped, and seeded into the controller
+    # so the kick-start defends it.
+    state = loop.set_charger_mode(ChargerMode.FORCED, 25.0)
+    assert state == {"mode": "forced", "forced_amps": 16.0, "active": True}
+    assert loop._charger_mode is ChargerMode.FORCED
+    assert loop._forced_target_a == 16.0
+    assert loop._charger.target_a == 16.0
+
+
+async def test_set_charger_mode_optimized_clears_forced(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    loop = TickLoop(
+        _config_with_charger(tmp_path),
+        session_factory,
+        OverrideController(),
+        PriceCache(),
+        SolarCache(),
+    )
+    loop.set_charger_mode(ChargerMode.FORCED, 10.0)
+    state = loop.set_charger_mode(ChargerMode.OPTIMIZED)
+    assert state == {"mode": "optimized", "forced_amps": None, "active": True}
+    assert loop._charger_mode is ChargerMode.OPTIMIZED
+    assert loop._forced_target_a == 0.0
+
+
+async def test_set_charger_mode_reports_inactive_when_disabled(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    loop = TickLoop(
+        _config(tmp_path), session_factory, OverrideController(), PriceCache(), SolarCache()
+    )
+    assert loop._charger is None
+    state = loop.set_charger_mode(ChargerMode.FORCED, 6.0)
+    # The mode is recorded but flagged inactive — the tick loop won't act on it.
+    assert state["active"] is False
+    assert state["mode"] == "forced"
+
+
+async def test_run_charger_control_forced_sets_status_ignoring_inputs(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """In FORCED the rule engine is bypassed: a forced status is produced even
+    when the readings the OPTIMIZED path needs are entirely missing."""
+    loop = TickLoop(
+        _config_with_charger(tmp_path),
+        session_factory,
+        OverrideController(),
+        PriceCache(),
+        SolarCache(),
+    )
+    loop.set_charger_mode(ChargerMode.FORCED, 12.0)
+    # All device readings None — OPTIMIZED would skip with "incomplete inputs".
+    await loop._run_charger_control(datetime.now(UTC), None, None, None)
+    status = loop.charger_status
+    assert status is not None
+    assert status["mode"] == "forced"
+    assert status["target_a"] == 12.0
+    assert status["paused"] is False
+    assert "FORCED" in status["reason"]
+
+
+async def test_disable_charger_control_resets_forced_mode(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    loop = TickLoop(
+        _config_with_charger(tmp_path),
+        session_factory,
+        OverrideController(),
+        PriceCache(),
+        SolarCache(),
+    )
+    loop.set_charger_mode(ChargerMode.FORCED, 9.0)
+    new = loop.config.model_copy(
+        update={
+            "charger_control": loop.config.charger_control.model_copy(update={"enabled": False})
+        }
+    )
+    loop.apply_hot_config(new)
+    assert loop._charger is None
+    assert loop._charger_mode is ChargerMode.OPTIMIZED
+    assert loop._forced_target_a == 0.0
 
 
 async def test_tick_persists_reading_and_decision(

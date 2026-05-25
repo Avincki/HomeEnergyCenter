@@ -173,6 +173,22 @@ section h2 {
     vertical-align: middle;
 }
 
+/* FORCED-mode pill — red to read as an active override (vs the amber advisory
+   dry-run pill). Carries a lower-case sentence, so drop the uppercase. */
+.charger-badge-forced {
+    background: var(--error);
+    color: #fff;
+    text-transform: none;
+    letter-spacing: 0;
+    font-size: 0.65rem;
+}
+
+/* Ring the charger-mode button (Force / Optimized) that is currently active. */
+.etrel-set-form button.is-active {
+    outline: 2px solid var(--text);
+    outline-offset: 1px;
+}
+
 .tiles {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));

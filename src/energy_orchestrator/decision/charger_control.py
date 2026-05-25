@@ -48,6 +48,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 
 import structlog
 from astral import Observer
@@ -56,6 +57,26 @@ from astral.sun import elevation, sun
 from energy_orchestrator.config.models import ChargerControlConfig
 
 logger = structlog.stdlib.get_logger(__name__)
+
+
+class ChargerMode(StrEnum):
+    """Runtime control mode for the charger, toggled from the Etrel tile.
+
+    Lives in memory on the tick loop (not config) — it is a transient operator
+    choice, reset to ``OPTIMIZED`` on a process restart, mirroring how the
+    inverter override is not persisted.
+
+    * ``OPTIMIZED`` — the rule engine (:class:`ChargerController`) decides the
+      setpoint from solar surplus / battery headroom.
+    * ``FORCED`` — hold an operator-set current regardless of solar, daytime,
+      or battery SoC; the only limit kept is the 16 A installation cap. The
+      controller's ``decide`` is suppressed; the setpoint is still defended
+      against Sonnen clamping by the kick-start (steadily, never cycled).
+    """
+
+    OPTIMIZED = "optimized"
+    FORCED = "forced"
+
 
 # Etrel connector-status codes that mean "a car is plugged in and chargeable".
 # Permissive on purpose: this Sonnen-managed firmware parks a plugged-in, idle

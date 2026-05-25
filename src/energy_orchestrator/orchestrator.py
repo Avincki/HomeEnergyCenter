@@ -46,6 +46,7 @@ from energy_orchestrator.decision.charger_control import (
     ChargerCommand,
     ChargerController,
     ChargerInputs,
+    ChargerMode,
     is_daytime,
 )
 from energy_orchestrator.decision.forecast import get_current_hour_price
@@ -95,6 +96,13 @@ _CHARGER_KICK_DRAWING_A = 2.0  # measured L1 current at/above which the car is
 # drawing -> session latched -> stop kicking.
 _CHARGER_KICK_MAX_S = 180.0  # give up re-asserting after this long per episode
 # so a genuinely-declining car isn't poked forever.
+
+# Hard installation ceiling (amps) for the FORCED setpoint. FORCED overrides
+# solar/daytime/SoC economics but never this cap — it mirrors the 16 A limit the
+# /etrel/set-current API and the HTML input enforce (the wired-in ceiling for
+# this install). Distinct from charger_control.max_charge_a, which is only the
+# OPTIMIZED ramp envelope and may be set lower.
+_CHARGER_FORCED_MAX_A = 16.0
 
 # Price-fetch window: yesterday + today + tomorrow (UTC). We pull yesterday
 # too because the dashboard renders prices on a local-time x-axis: in any
@@ -181,6 +189,10 @@ class TickLoop:
         # Latest charger decision, exposed to the dashboard via /api/state. None
         # until the first decision tick (or when charger control is inactive).
         self._charger_status: dict[str, Any] | None = None
+        # Runtime control mode (in-memory; OPTIMIZED on restart). FORCED holds
+        # ``_forced_target_a`` regardless of economics, capped at 16 A.
+        self._charger_mode: ChargerMode = ChargerMode.OPTIMIZED
+        self._forced_target_a: float = 0.0
         # Kick-start episode tracking (see _kick_charger_if_stalled): when the
         # current stalled-start episode began and whether we've logged giving up
         # on it. Both reset when the stall clears.
@@ -577,6 +589,9 @@ class TickLoop:
         """
         if self._charger is None or self.config.solar is None:
             return
+        if self._charger_mode is ChargerMode.FORCED:
+            await self._run_forced_charge(when, etrel_r)
+            return
         soc = sonnen_r.data.get("soc_pct") if sonnen_r is not None else None
         batt = sonnen_r.data.get("battery_power_w") if sonnen_r is not None else None
         grid = p1_r.data.get("active_power_w") if p1_r is not None else None
@@ -607,6 +622,7 @@ class TickLoop:
             "target_a": command.target_a,
             "paused": command.paused,
             "reason": command.reason,
+            "mode": self._charger_mode.value,
             "dry_run": self.config.charger_control.dry_run,
         }
         logger.info(
@@ -620,6 +636,48 @@ class TickLoop:
             soc_pct=inputs.battery_soc_pct,
             daytime=inputs.is_daytime,
             attached=inputs.car_attached,
+        )
+        if self.config.charger_control.dry_run:
+            return
+        await self._actuate_charger(command, etrel_r)
+
+    async def _run_forced_charge(self, when: datetime, etrel_r: DeviceReading | None) -> None:
+        """Hold the operator-forced setpoint, bypassing the rule engine.
+
+        FORCED ignores solar surplus, daytime and the battery SoC floor (the
+        operator's explicit override) and keeps only the 16 A installation cap.
+        The forced value is pushed into the controller's target each tick so the
+        kick-start defends it against Sonnen clamping (steadily — it never cycles
+        the pilot) and a later switch back to OPTIMIZED resumes from here rather
+        than snapping to 0.
+        """
+        if self._charger is None:
+            return
+        amps = max(0.0, min(self._forced_target_a, _CHARGER_FORCED_MAX_A))
+        paused = amps <= 0.0
+        cap = _CHARGER_FORCED_MAX_A
+        reason = (
+            "FORCED stop (0 A)"
+            if paused
+            else f"FORCED {amps:.0f} A (overriding solar/battery; {cap:.0f} A cap)"
+        )
+        command = ChargerCommand(target_a=amps, paused=paused, reason=reason)
+        # Keep the controller's accumulator in sync so the kick-start (which reads
+        # _charger.target_a) defends this value and OPTIMIZED resumes smoothly.
+        self._charger.adopt_manual_target(amps)
+        self._charger_status = {
+            "timestamp": when.isoformat(),
+            "target_a": command.target_a,
+            "paused": command.paused,
+            "reason": command.reason,
+            "mode": self._charger_mode.value,
+            "dry_run": self.config.charger_control.dry_run,
+        }
+        logger.info(
+            "charger forced",
+            target_a=amps,
+            paused=paused,
+            dry_run=self.config.charger_control.dry_run,
         )
         if self.config.charger_control.dry_run:
             return
@@ -782,6 +840,10 @@ class TickLoop:
                 self._charger_status = None
                 self._charger_kick_started_at = None
                 self._charger_kick_gave_up = False
+                # Disabling the feature drops any FORCED override so a later
+                # re-enable starts from the safe OPTIMIZED default.
+                self._charger_mode = ChargerMode.OPTIMIZED
+                self._forced_target_a = 0.0
         elif cc.enabled and self._etrel is not None and self._solar_provider is not None:
             self._charger = ChargerController(cc)
 
@@ -798,6 +860,37 @@ class TickLoop:
         applied = self._charger.adopt_manual_target(amps)
         logger.info("charger manual target adopted", amps=applied)
         return True
+
+    def set_charger_mode(self, mode: ChargerMode, amps: float | None = None) -> dict[str, Any]:
+        """Switch the runtime charger mode (Etrel tile Force / Optimized buttons).
+
+        FORCED clamps ``amps`` to the 16 A installation cap, stores it as the
+        sticky forced setpoint, and seeds the controller's target so the
+        kick-start defends it immediately (the next tick actuates it; the API
+        also does an immediate write for instant feedback). OPTIMIZED clears the
+        forced setpoint and hands back to the rule engine, which resumes from the
+        controller's current target. Returns the new mode state for the caller to
+        echo to the UI; ``active`` is False when charger control is disabled (the
+        mode is recorded but the tick loop won't act on it).
+        """
+        active = self._charger is not None
+        if mode is ChargerMode.FORCED:
+            requested = amps if amps is not None else self._forced_target_a
+            self._forced_target_a = max(0.0, min(requested, _CHARGER_FORCED_MAX_A))
+            self._charger_mode = ChargerMode.FORCED
+            if self._charger is not None:
+                self._charger.adopt_manual_target(self._forced_target_a)
+            logger.info("charger mode set", mode=mode.value, forced_a=self._forced_target_a)
+        else:
+            self._charger_mode = ChargerMode.OPTIMIZED
+            self._forced_target_a = 0.0
+            logger.info("charger mode set", mode=mode.value)
+        forced = self._charger_mode is ChargerMode.FORCED
+        return {
+            "mode": self._charger_mode.value,
+            "forced_amps": self._forced_target_a if forced else None,
+            "active": active,
+        }
 
     def _is_daytime(self, when: datetime) -> bool:
         solar = self.config.solar

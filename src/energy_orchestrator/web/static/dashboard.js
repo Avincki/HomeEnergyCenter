@@ -261,6 +261,8 @@
             setText("state-charger-when", "");
             setHidden("state-charger-when", true);
             setHidden("state-charger-dry-run", true);
+            setHidden("state-charger-mode", true);
+            applyChargerModeButtons(null);
             return;
         }
         const target = c.paused
@@ -272,6 +274,19 @@
             c.timestamp ? `decided ${fmtTimeFull(c.timestamp)}` : "");
         setHidden("state-charger-when", !c.timestamp);
         setHidden("state-charger-dry-run", !c.dry_run);
+        // Mode badge + active-button highlight, so it's obvious whether the
+        // algorithm or a forced setpoint is in control.
+        const forced = c.mode === "forced";
+        setText("state-charger-mode", forced ? "FORCED — ignoring solar/battery" : "");
+        setHidden("state-charger-mode", !forced);
+        applyChargerModeButtons(c.mode || "optimized");
+    }
+
+    function applyChargerModeButtons(mode) {
+        const forceBtn = document.getElementById("etrel-force-btn");
+        const optBtn = document.getElementById("etrel-optimized-btn");
+        if (forceBtn) forceBtn.classList.toggle("is-active", mode === "forced");
+        if (optBtn) optBtn.classList.toggle("is-active", mode === "optimized");
     }
 
     function buildChartData(prices, readings, solarPoints) {
@@ -803,12 +818,39 @@
         applyNavUi();
     }
 
-    function wireEtrelSetCurrent() {
-        const btn = document.getElementById("etrel-set-current-btn");
+    // The Etrel tile's two control buttons both POST /api/charger/mode:
+    //   Force     → { mode:"forced", amps }  sticky setpoint, immediate write
+    //   Optimized → { mode:"optimized" }     hand control to the rule engine
+    // FORCED ignores solar/battery (16 A cap only) and holds until Optimized.
+    function wireChargerModeControls() {
+        const forceBtn = document.getElementById("etrel-force-btn");
+        const optBtn = document.getElementById("etrel-optimized-btn");
         const input = document.getElementById("etrel-set-current-input");
         const status = document.getElementById("etrel-set-current-status");
-        if (!btn || !input) return;
-        btn.addEventListener("click", async () => {
+        if (!forceBtn || !optBtn || !input) return;
+
+        async function postMode(body, busyLabel) {
+            forceBtn.disabled = true;
+            optBtn.disabled = true;
+            if (status) status.textContent = busyLabel;
+            try {
+                const resp = await fetch("/api/charger/mode", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(body),
+                });
+                if (!resp.ok) {
+                    const detail = await resp.text();
+                    throw new Error(`HTTP ${resp.status}: ${detail}`);
+                }
+                return await resp.json();
+            } finally {
+                forceBtn.disabled = false;
+                optBtn.disabled = false;
+            }
+        }
+
+        forceBtn.addEventListener("click", async () => {
             const amps = Number(input.value);
             // Safety hard cap at 16 A — the API also enforces this; the
             // client-side check is just for a friendlier error.
@@ -816,24 +858,20 @@
                 if (status) status.textContent = "0–16 A only";
                 return;
             }
-            btn.disabled = true;
-            if (status) status.textContent = "Sending…";
             try {
-                const resp = await fetch("/api/etrel/set-current", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ amps }),
-                });
-                if (!resp.ok) {
-                    const detail = await resp.text();
-                    throw new Error(`HTTP ${resp.status}: ${detail}`);
-                }
-                const data = await resp.json();
-                if (status) status.textContent = formatSetCurrentResult(data);
+                const data = await postMode({ mode: "forced", amps }, "Forcing…");
+                if (status) status.textContent = `Forced · ${formatSetCurrentResult(data)}`;
             } catch (e) {
                 if (status) status.textContent = `Failed: ${e.message}`;
-            } finally {
-                btn.disabled = false;
+            }
+        });
+
+        optBtn.addEventListener("click", async () => {
+            try {
+                await postMode({ mode: "optimized" }, "Switching…");
+                if (status) status.textContent = "Optimized — algorithm in control";
+            } catch (e) {
+                if (status) status.textContent = `Failed: ${e.message}`;
             }
         });
     }
@@ -871,7 +909,7 @@
         if (!canvas) return;
 
         wireChartNav();
-        wireEtrelSetCurrent();
+        wireChargerModeControls();
 
         const urls = buildChartUrls();
         let prices = [];

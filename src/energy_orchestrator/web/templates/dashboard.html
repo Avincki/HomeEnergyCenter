@@ -16,6 +16,10 @@
         <div class="state-reason" id="state-reason">{% if decision %}{{ decision.reason }}{% else %}The orchestrator tick loop hasn't produced a decision &mdash; populate config.yaml and start the service.{% endif %}</div>
         <div class="state-when" id="state-when" {% if not decision %}hidden{% endif %}>{% if decision %}decided {{ decision.timestamp | localtime("%Y-%m-%d %H:%M:%S %Z") }}{% endif %}</div>
         <div class="state-headline" id="state-empty-headline" {% if decision %}hidden{% endif %}>No decision recorded yet</div>
+        <div class="state-reason se-limit" id="se-limit-line" hidden>
+            Inverter limit: <strong id="se-limit-pct">&mdash;</strong>
+            <span class="se-limit-badge" id="se-limit-status" hidden></span>
+        </div>
         <form class="etrel-set-form se-test-form" id="se-test-form" onsubmit="return false;">
             <button type="button" id="se-toggle-btn"
                 title="Manually flip the inverter between 0 % and 100 % over Modbus, bypassing the engine and dry-run, to confirm the hardware obeys curtailment.">Test ON/OFF</button>

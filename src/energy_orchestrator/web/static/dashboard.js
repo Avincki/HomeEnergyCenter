@@ -613,6 +613,62 @@
                 flag.setAttribute("hidden", "");
             }
         }
+
+        applySolarEdgeLimit(state, decision);
+    }
+
+    // Read-only "is the inverter actually obeying us?" indicator. Surfaces the
+    // live SolarEdge Active Power Limit register (0xF001) and whether it matches
+    // what the engine commanded. SolarEdge quirk: 0xF001 has a sub-second
+    // watchdog and reverts to 100 % unless refreshed continuously, so while the
+    // decision is OFF this currently reads "reverted to 100 % — not curtailing".
+    // Once the inverter is configured to hold the limit it flips to "holding".
+    //
+    // `actuated` distinguishes a live read from the value the engine just *wrote*:
+    // an actuation status carries the target (not a read-back), so we never claim
+    // "holding" off a write we haven't re-read — that would flash green falsely on
+    // every decision tick.
+    function applySolarEdgeLimit(state, decision) {
+        const line = document.getElementById("se-limit-line");
+        const badge = document.getElementById("se-limit-status");
+        if (!line) return;
+        const payload = sourcePayload(state, "solaredge");
+        const pct = payload.active_power_limit_pct;
+        if (pct == null) {
+            setText("se-limit-pct", "—");
+            if (badge) badge.setAttribute("hidden", "");
+            line.removeAttribute("hidden");
+            return;
+        }
+        const p = Math.round(pct);
+        setText("se-limit-pct", p + " %");
+        line.removeAttribute("hidden");
+        if (!badge) return;
+        badge.classList.remove("se-limit-ok", "se-limit-warn", "se-limit-muted");
+        const st = decision && decision.state;
+        if (payload.actuated === true) {
+            badge.textContent = "commanded — read pending";
+            badge.classList.add("se-limit-muted");
+            badge.removeAttribute("hidden");
+            return;
+        }
+        if (!st) { badge.setAttribute("hidden", ""); return; }
+        const expected = st === "off" ? 0 : 100;
+        const holding = Math.abs(p - expected) <= 1;
+        if (st === "off" && holding) {
+            badge.textContent = "✓ holding (curtailed)";
+            badge.classList.add("se-limit-ok");
+        } else if (st === "off") {
+            badge.textContent = "⚠ reverted to " + p + " % — not curtailing";
+            badge.classList.add("se-limit-warn");
+        } else if (holding) {
+            badge.textContent = "released";
+            badge.classList.add("se-limit-muted");
+        } else {
+            badge.textContent = "⚠ limited to " + p + " % — engine wants 100 %";
+            badge.classList.add("se-limit-warn");
+        }
+        badge.removeAttribute("hidden");
     }
 
     function applySolarToday(solarJson) {

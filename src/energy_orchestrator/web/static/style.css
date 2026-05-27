@@ -183,6 +183,21 @@ section h2 {
     font-size: 0.65rem;
 }
 
+/* Live SolarEdge active-power-limit indicator: shows whether the inverter is
+   actually holding the engine's commanded limit (read-only diagnostic). */
+.se-limit { font-size: 0.85rem; }
+.se-limit-badge {
+    display: inline-block;
+    font-size: 0.7rem;
+    padding: 0.1rem 0.45rem;
+    border-radius: 3px;
+    margin-left: 0.3rem;
+    vertical-align: middle;
+}
+.se-limit-ok { background: var(--on); color: #000; }
+.se-limit-warn { background: var(--warn); color: #000; }
+.se-limit-muted { background: var(--off); color: #000; }
+
 /* Ring the charger-mode button (Force / Optimized) that is currently active. */
 .etrel-set-form button.is-active {
     outline: 2px solid var(--text);

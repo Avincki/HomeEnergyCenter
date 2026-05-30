@@ -60,6 +60,12 @@ logs/
 *.log
 *.log.*
 
+# TLS certs/keys — per-host Tailscale HTTPS material, lives in the app dir on
+# the Pi (see docs/raspberry-pi-setup.md §6.5). NEVER commit the private key.
+*.crt
+*.key
+*.pem
+
 # Pre-commit
 .pre-commit-cache/
 

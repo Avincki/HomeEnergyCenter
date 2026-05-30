@@ -640,6 +640,15 @@ class TickLoop:
         before, read_before_error = await self._read_solaredge_limit_safe()
         target = _OFF_PCT if (before is None or before >= 50) else _ON_PCT
 
+        # ─── TEMPORARY (remove me) ────────────────────────────────────────────
+        # One-shot: make sure Advanced Power Control is enabled+committed so the
+        # active-power-limit write below is actually enforced. Without it the
+        # write is accepted and read-back-verified but the panels keep producing
+        # ("accepted but ignored"). REMOVE this block — and the method it calls —
+        # once the installer commits APC in SetApp. See devices/solaredge.py.
+        apc = await self._solaredge.ensure_advanced_power_control_enabled()
+        # ──────────────────────────────────────────────────────────────────────
+
         write_error: str | None = None
         try:
             await self._solaredge.set_active_power_limit(target)
@@ -666,6 +675,7 @@ class TickLoop:
             write_succeeded=write_error is None,
             took=took,
             hold_until=hold_until,
+            apc=apc,  # TEMPORARY: drop with the one-shot APC enable
         )
         return {
             "limit_before_pct": before,
@@ -678,6 +688,8 @@ class TickLoop:
             "readback_error": readback_error,
             "took": took,
             "hold_seconds": int(_SOLAREDGE_MANUAL_HOLD.total_seconds()) if hold_until else 0,
+            # TEMPORARY: remove with the one-shot Advanced Power Control enable.
+            "advanced_power_control": apc,
         }
 
     async def _run_charger_control(

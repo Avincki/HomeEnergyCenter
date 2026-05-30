@@ -17,6 +17,7 @@ reconnects from scratch.
 from __future__ import annotations
 
 import contextlib
+from typing import Any
 
 from pymodbus.client import AsyncModbusTcpClient
 from pymodbus.exceptions import ModbusException
@@ -36,6 +37,26 @@ from energy_orchestrator.devices.registry import register_device
 ACTIVE_POWER_LIMIT_REGISTER = 0xF001
 OFF_PCT = 0
 ON_PCT = 100
+
+# ─────────────────────────── TEMPORARY (remove me) ───────────────────────────
+# ⚠️  ONE-SHOT Advanced Power Control enable/commit — STOP-GAP, REMOVE LATER.
+#
+# The active-power-limit register (0xF001) is only *enforced* when the inverter
+# has "Advanced Power Control" enabled AND committed. If it isn't, writes to
+# 0xF001 are accepted and read-back-verified but the panels keep producing
+# ("accepted but ignored"). The proper fix is for the installer to enable +
+# commit Advanced Power Control in SetApp.
+#
+# Until that is done, ``ensure_advanced_power_control_enabled()`` below enables
+# it over Modbus and commits once. Committing writes to the inverter's
+# non-volatile flash, which has limited write endurance, so we ONLY commit when
+# the enable flag actually reads back disabled.
+#
+# DELETE these two constants and ``ensure_advanced_power_control_enabled()``
+# (and its call site in the orchestrator) once SetApp has APC enabled+committed.
+ADVANCED_PWR_CONTROL_EN_REGISTER = 0xF142  # INT32, two registers, 0=off / 1=on
+COMMIT_POWER_CONTROL_REGISTER = 0xF100  # write 1 to persist power-control settings
+# ──────────────────────────────────────────────────────────────────────────────
 
 
 @register_device(SolarEdgeConfig)
@@ -136,6 +157,93 @@ class SolarEdgeClient(DeviceClient[SolarEdgeConfig]):
                 f"SolarEdge read-back mismatch at {self._endpoint}: "
                 f"wrote {value}, read back {actual}"
             )
+
+    # ─────────────────────────── TEMPORARY (remove me) ──────────────────────
+    async def ensure_advanced_power_control_enabled(self) -> dict[str, Any]:
+        """STOP-GAP one-shot: enable + commit Advanced Power Control.
+
+        ⚠️ REMOVE once the installer has enabled & committed Advanced Power
+        Control in SetApp — see the warning block above the register constants.
+
+        Reads ``AdvancedPwrControlEn`` (0xF142, INT32). If already enabled,
+        does nothing and reports ``already_enabled``. If disabled, writes 1
+        (LSW first), then writes the commit register (0xF100) to persist to the
+        inverter's non-volatile flash, and re-reads to confirm. We only commit
+        when the flag reads back disabled, to avoid needless flash wear.
+
+        Never raises: returns a structured result with ``error`` set on any I/O
+        failure so the operator probe reports it instead of surfacing a 500.
+        """
+
+        def _result(
+            *, already: bool, enabled_now: bool, committed: bool, error: str | None
+        ) -> dict[str, Any]:
+            return {
+                "already_enabled": already,
+                "enabled_now": enabled_now,
+                "committed": committed,
+                "error": error,
+            }
+
+        try:
+            client = await self._ensure_connected()
+            read = await client.read_holding_registers(
+                address=ADVANCED_PWR_CONTROL_EN_REGISTER,
+                count=2,
+                device_id=self.config.unit_id,
+            )
+            if read.isError():
+                return _result(
+                    already=False, enabled_now=False, committed=False,
+                    error=f"enable-flag read error: {read}",
+                )
+            if read.registers[0] != 0 or read.registers[1] != 0:
+                return _result(already=True, enabled_now=True, committed=False, error=None)
+
+            # Disabled → enable (32-bit value 1 as LSW, MSW) then commit.
+            wr = await client.write_registers(
+                address=ADVANCED_PWR_CONTROL_EN_REGISTER,
+                values=[1, 0],
+                device_id=self.config.unit_id,
+            )
+            if wr.isError():
+                return _result(
+                    already=False, enabled_now=False, committed=False,
+                    error=f"enable write error: {wr}",
+                )
+            commit = await client.write_register(
+                address=COMMIT_POWER_CONTROL_REGISTER,
+                value=1,
+                device_id=self.config.unit_id,
+            )
+            if commit.isError():
+                return _result(
+                    already=False, enabled_now=False, committed=False,
+                    error=f"commit write error: {commit}",
+                )
+            check = await client.read_holding_registers(
+                address=ADVANCED_PWR_CONTROL_EN_REGISTER,
+                count=2,
+                device_id=self.config.unit_id,
+            )
+            enabled_now = not check.isError() and (
+                check.registers[0] != 0 or check.registers[1] != 0
+            )
+            return _result(
+                already=False, enabled_now=enabled_now, committed=True, error=None
+            )
+        except TimeoutError as e:
+            await self._drop_connection()
+            return _result(
+                already=False, enabled_now=False, committed=False, error=f"timeout: {e}"
+            )
+        except ModbusException as e:
+            await self._drop_connection()
+            return _result(
+                already=False, enabled_now=False, committed=False, error=f"modbus: {e}"
+            )
+
+    # ─────────────────────────── end TEMPORARY ───────────────────────────────
 
     async def read_data(self) -> DeviceReading | None:
         limit = await self.read_active_power_limit()

@@ -141,9 +141,30 @@ class FakeSolarEdge(FakeClient):
         *,
         data: dict[str, Any] | None = None,
         raise_on_write: BaseException | None = None,
+        apc_enabled: bool = True,
     ) -> None:
         super().__init__(SourceName.SOLAREDGE, data=data or {"active_power_limit_pct": 100.0})
         self._raise_on_write = raise_on_write
+        # TEMPORARY: mirrors the one-shot Advanced Power Control enable probe.
+        self._apc_enabled = apc_enabled
+        self.apc_calls = 0
+
+    async def ensure_advanced_power_control_enabled(self) -> dict[str, Any]:
+        self.apc_calls += 1
+        if self._apc_enabled:
+            return {
+                "already_enabled": True,
+                "enabled_now": True,
+                "committed": False,
+                "error": None,
+            }
+        self._apc_enabled = True
+        return {
+            "already_enabled": False,
+            "enabled_now": True,
+            "committed": True,
+            "error": None,
+        }
 
     async def set_active_power_limit(self, value: int) -> None:
         if self._raise_on_write is not None:
@@ -632,6 +653,24 @@ async def test_manual_toggle_curtails_when_producing(
     assert result["write_succeeded"] is True
     assert result["active_power_limit_pct_after"] == 0
     assert result["took"] is True
+
+
+async def test_manual_toggle_enables_advanced_power_control(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    # TEMPORARY: the probe runs the one-shot APC enable before curtailing, and
+    # surfaces the result. When APC was disabled it enables + commits it once.
+    config = _config(tmp_path, dry_run=False)
+    loop = TickLoop(config, session_factory, OverrideController(), PriceCache(), SolarCache())
+    fake_se = FakeSolarEdge(data={"active_power_limit_pct": 100.0}, apc_enabled=False)
+    loop._solaredge = fake_se  # type: ignore[assignment]
+
+    result = await loop.toggle_solaredge_limit_manual()
+
+    assert fake_se.apc_calls == 1
+    assert result["advanced_power_control"]["committed"] is True
+    assert result["advanced_power_control"]["enabled_now"] is True
 
 
 async def test_manual_toggle_releases_when_curtailed(

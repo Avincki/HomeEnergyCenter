@@ -988,6 +988,20 @@
         });
     }
 
+    // TEMPORARY (remove me): summarise the one-shot Advanced Power Control
+    // enable that the probe runs before curtailing. Drop this helper and its
+    // call below once the installer commits APC in SetApp — see solaredge.py.
+    //   already on → "APC on"; just turned on → "APC enabled+committed";
+    //   failed/rejected → "APC enable failed: …".
+    function formatApcSegment(apc) {
+        if (!apc) return "";
+        if (apc.error) return ` · APC enable failed: ${apc.error}`;
+        if (apc.already_enabled) return " · APC on";
+        if (apc.committed && apc.enabled_now) return " · APC enabled+committed";
+        if (!apc.enabled_now) return " · APC still off (enable rejected)";
+        return "";
+    }
+
     // Render the structured /api/solaredge/test-toggle response as a one-liner.
     //   1. Write OK, register reads the target → "Sent OFF (0 %) · register now 0 %".
     //      If the panels keep producing despite this, Advanced Power Control
@@ -1000,14 +1014,16 @@
         const readbackTxt = data.readback_error
             ? `readback failed: ${data.readback_error}`
             : (after != null ? `register now ${after} %` : "register —");
+        // TEMPORARY: APC enable status — remove with the one-shot APC probe.
+        const apcTxt = formatApcSegment(data.advanced_power_control);
         if (data.write_succeeded) {
             // The write arms a short hold so the engine's self-healing
             // reconciliation doesn't snap the register back before you can
             // watch production respond.
             const holdTxt = data.hold_seconds ? ` · holding ${data.hold_seconds}s` : "";
-            return `Sent ${stateTxt} (${target} %) · ${readbackTxt}${holdTxt}`;
+            return `Sent ${stateTxt} (${target} %) · ${readbackTxt}${holdTxt}${apcTxt}`;
         }
-        return `Tried ${stateTxt} (${target} %) · write failed: ${data.write_error || "unknown"} · ${readbackTxt}`;
+        return `Tried ${stateTxt} (${target} %) · write failed: ${data.write_error || "unknown"} · ${readbackTxt}${apcTxt}`;
     }
 
     async function init() {

@@ -15,6 +15,7 @@ from energy_orchestrator.config.models import (
     SonnenApiVersion,
     SonnenBatterieConfig,
     StorageConfig,
+    TronityConfig,
     WebConfig,
 )
 
@@ -35,6 +36,7 @@ __all__ = [
     "SonnenApiVersion",
     "SonnenBatterieConfig",
     "StorageConfig",
+    "TronityConfig",
     "WebConfig",
     "load_config",
 ]

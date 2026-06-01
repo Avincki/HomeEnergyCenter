@@ -127,6 +127,61 @@ class EtrelInchConfig(DeviceConfig):
     unit_id: int = Field(default=1, ge=1, le=247)
 
 
+# ----- vehicle (EV telemetry) --------------------------------------------------
+
+
+class TronityConfig(_StrictModel):
+    """Tronity cloud-API link for reading the EV (Mercedes EQS) state of charge.
+
+    Tronity is an OAuth2 REST bridge to the *car's own* telemetry — not a local
+    device — so it has no host/port and is polled on its own slow cadence
+    (``poll_interval_s``) rather than every tick. Each poll wakes the car and
+    draws on its 12 V battery, and the data itself lags 30-40 min, so the
+    default cadence is deliberately long.
+
+    SoC is read-only here: the EV is never commanded (the Etrel charger stays
+    the sole actuator). The data is vehicle-centric, not socket-centric — the
+    car reports a VIN wherever it physically is — so a consumer should confirm
+    the EQS is at home (``home_latitude``/``home_longitude`` geofence) and the
+    record is fresh (``stale_after_s``) before trusting it. No charging rule
+    consumes the SoC yet; this section only feeds the dashboard for now.
+    """
+
+    client_id: SecretStr
+    client_secret: SecretStr
+    # VIN selects which vehicle on the Tronity account to read. Optional when
+    # the account has exactly one vehicle (that one is then used); required to
+    # disambiguate when the account exposes several.
+    vin: str | None = Field(default=None, max_length=32)
+    base_url: str = Field(
+        default="https://api.tronity.tech",
+        min_length=1,
+        description="Override the Tronity API base (test/staging); production needs no change",
+    )
+    # Long by default: each poll wakes the car / drains its 12 V battery, and
+    # Tronity data lags 30-40 min so a faster cadence buys nothing.
+    poll_interval_s: float = Field(default=900.0, ge=60.0, le=86400.0)
+    timeout_s: float = Field(default=10.0, gt=0.0, le=60.0)
+    retry_count: int = Field(default=2, ge=1, le=10)
+    # SoC older than this is treated as not trustworthy by any consumer (a
+    # future charge-control gate). Display still shows it, flagged stale.
+    stale_after_s: float = Field(default=3600.0, gt=0.0)
+    # Home geofence — lets a consumer confirm the EQS is physically at home
+    # before trusting its SoC. Optional; both coords must be set together, and
+    # when unset "at home" can't be computed and is reported as null.
+    home_latitude: float | None = Field(default=None, ge=-90.0, le=90.0)
+    home_longitude: float | None = Field(default=None, ge=-180.0, le=180.0)
+    geofence_radius_m: float = Field(default=200.0, gt=0.0, le=100000.0)
+
+    @model_validator(mode="after")
+    def _geofence_consistent(self) -> TronityConfig:
+        if (self.home_latitude is None) != (self.home_longitude is None):
+            raise ValueError(
+                "tronity.home_latitude and home_longitude must be set together (or both omitted)"
+            )
+        return self
+
+
 # ----- prices ------------------------------------------------------------------
 
 
@@ -331,6 +386,9 @@ class AppConfig(_StrictModel):
     # The HomeWizard car_charger meter measures Tesla + Etrel together; this
     # entry lets the orchestrator subtract Etrel power to derive Tesla draw.
     etrel: EtrelInchConfig | None = None
+    # Optional Tronity cloud link for the EV's state of charge (read-only,
+    # display-only for now). Omit the whole section to disable.
+    tronity: TronityConfig | None = None
     prices: PricesConfig
     solar: SolarConfig | None = None
     decision: DecisionConfig = Field(default_factory=DecisionConfig)

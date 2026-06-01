@@ -17,6 +17,7 @@ from energy_orchestrator.data import UnitOfWork
 from energy_orchestrator.devices.etrel import EtrelInchClient
 from energy_orchestrator.prices import PriceCache
 from energy_orchestrator.solar import SolarCache
+from energy_orchestrator.vehicle import VehicleCache
 from energy_orchestrator.web.override import OverrideController
 
 
@@ -42,6 +43,10 @@ def get_price_cache(request: Request) -> PriceCache:
 
 def get_solar_cache(request: Request) -> SolarCache:
     return request.app.state.solar_cache  # type: ignore[no-any-return]
+
+
+def get_vehicle_cache(request: Request) -> VehicleCache:
+    return request.app.state.vehicle_cache  # type: ignore[no-any-return]
 
 
 def get_uow(request: Request) -> UnitOfWork:

@@ -42,6 +42,7 @@ from energy_orchestrator.devices.errors import DeviceError
 from energy_orchestrator.devices.etrel import EtrelInchClient
 from energy_orchestrator.prices import PriceCache
 from energy_orchestrator.solar import SolarCache
+from energy_orchestrator.vehicle import VehicleCache, VehicleRecord
 from energy_orchestrator.web.dependencies import (
     get_charger_status,
     get_config,
@@ -50,6 +51,7 @@ from energy_orchestrator.web.dependencies import (
     get_price_cache,
     get_solar_cache,
     get_uow,
+    get_vehicle_cache,
     require_same_origin,
 )
 from energy_orchestrator.web.override import OverrideController
@@ -61,6 +63,7 @@ PriceCacheDep = Annotated[PriceCache, Depends(get_price_cache)]
 SolarCacheDep = Annotated[SolarCache, Depends(get_solar_cache)]
 EtrelClientDep = Annotated[EtrelInchClient | None, Depends(get_etrel_client)]
 ChargerStatusDep = Annotated[dict[str, Any] | None, Depends(get_charger_status)]
+VehicleCacheDep = Annotated[VehicleCache, Depends(get_vehicle_cache)]
 
 router = APIRouter(prefix="/api")
 
@@ -157,8 +160,40 @@ def _reading_to_dict(r: Reading | None) -> dict[str, Any] | None:
         "small_solar_w": r.small_solar_w,
         "large_solar_w": r.large_solar_w,
         "etrel_power_w": r.etrel_power_w,
+        "ev_soc_pct": r.ev_soc_pct,
         "injection_price_eur_per_kwh": r.injection_price_eur_per_kwh,
         "consumption_price_eur_per_kwh": r.consumption_price_eur_per_kwh,
+    }
+
+
+def _vehicle_to_dict(
+    record: VehicleRecord | None, config: AppConfig, now: datetime
+) -> dict[str, Any] | None:
+    """Serialize the cached EV telemetry plus the derived trust signals.
+
+    ``fresh`` (record recent enough) and ``at_home`` (within the configured
+    geofence) are the gates a future charge-control rule would consult; surfaced
+    here so the dashboard can show *why* a SoC is or isn't being trusted.
+    Returns ``None`` when Tronity isn't configured or no record exists yet.
+    """
+    cfg = config.tronity
+    if cfg is None or record is None:
+        return None
+    age = record.age(now)
+    return {
+        "soc_pct": record.soc_pct,
+        "plugged": record.plugged,
+        "charging": record.charging,
+        "range_km": record.range_km,
+        "odometer_km": record.odometer_km,
+        "charger_power_kw": record.charger_power_kw,
+        "latitude": record.latitude,
+        "longitude": record.longitude,
+        "recorded_at": _iso_utc(record.recorded_at),
+        "fetched_at": _iso_utc(record.fetched_at),
+        "age_s": age.total_seconds() if age is not None else None,
+        "fresh": record.is_fresh(now, timedelta(seconds=cfg.stale_after_s)),
+        "at_home": record.at_home(cfg.home_latitude, cfg.home_longitude, cfg.geofence_radius_m),
     }
 
 
@@ -239,6 +274,8 @@ async def get_state(
     uow: UowDep,
     controller: OverrideDep,
     charger: ChargerStatusDep,
+    config: ConfigDep,
+    vehicle_cache: VehicleCacheDep,
 ) -> dict[str, Any]:
     async with uow:
         latest_reading = await uow.readings.latest()
@@ -250,6 +287,23 @@ async def get_state(
         "override": _override_to_dict(controller),
         "sources": [_source_to_dict(s) for s in sources],
         "charger": charger,
+        "vehicle": _vehicle_to_dict(vehicle_cache.record(), config, datetime.now(UTC)),
+    }
+
+
+@router.get("/vehicle")
+async def get_vehicle(
+    config: ConfigDep,
+    vehicle_cache: VehicleCacheDep,
+) -> dict[str, Any]:
+    """Latest cached EV telemetry (Tronity) plus freshness/geofence signals.
+
+    ``vehicle`` is ``None`` when Tronity isn't configured or no record has been
+    fetched yet; ``last_refresh`` is when the cache was last written.
+    """
+    return {
+        "vehicle": _vehicle_to_dict(vehicle_cache.record(), config, datetime.now(UTC)),
+        "last_refresh": _iso_utc(vehicle_cache.last_refresh),
     }
 
 

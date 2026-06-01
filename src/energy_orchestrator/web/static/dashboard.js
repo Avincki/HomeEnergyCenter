@@ -22,6 +22,9 @@
     // Halo drawn underneath the SoC line so it stays legible where it crosses
     // bars or the solar fill.
     const COLOR_SOC_HALO = "rgba(2, 6, 23, 0.85)";
+    // Car (EV) SoC: red-500 — shares the right-hand SoC % axis with the blue
+    // battery line but is unmistakably distinct from it.
+    const COLOR_EV_SOC = "#ef4444";
     const COLOR_SOLAR_FILL = "rgba(251, 146, 60, 0.30)";
     const COLOR_SOLAR_LINE = "rgba(251, 146, 60, 0.85)";
     // Measured total solar (small + large): yellow-300, distinct from the
@@ -316,6 +319,14 @@
             y: r.battery_soc_pct == null ? null : r.battery_soc_pct,
         }));
 
+        // Car (EV) SoC from Tronity — same right-hand % axis as the battery
+        // SoC. Null y where no sample so the line breaks across gaps (the EV
+        // is polled far less often than the battery, so expect a stepped line).
+        const evSocLine = readings.map(r => ({
+            x: new Date(r.timestamp).valueOf(),
+            y: r.ev_soc_pct == null ? null : r.ev_soc_pct,
+        }));
+
         const solarLine = (solarPoints || []).map(p => ({
             x: new Date(p.timestamp).valueOf(),
             y: p.watts / 1000.0,  // chart axis is in kW for readable numbers
@@ -338,7 +349,9 @@
             };
         });
 
-        return { priceBars, priceColors, priceBorderWidths, socLine, solarLine, totalSolarLine };
+        return {
+            priceBars, priceColors, priceBorderWidths, socLine, evSocLine, solarLine, totalSolarLine,
+        };
     }
 
     function renderCombined(canvas, prices, readings, solarPoints) {
@@ -348,8 +361,9 @@
         endOfDay.setDate(endOfDay.getDate() + 1);
         const dayLabel = fmtDateYMD(startOfDay);
 
-        const { priceBars, priceColors, priceBorderWidths, socLine, solarLine, totalSolarLine } =
-            buildChartData(prices, readings, solarPoints);
+        const {
+            priceBars, priceColors, priceBorderWidths, socLine, evSocLine, solarLine, totalSolarLine,
+        } = buildChartData(prices, readings, solarPoints);
 
         return new Chart(canvas, {
             data: {
@@ -435,6 +449,32 @@
                         yAxisID: "ySoc",
                         order: 0,
                     },
+                    {
+                        // Dark halo behind the car-SoC line for contrast.
+                        type: "line",
+                        label: "_ev_soc_halo",
+                        data: evSocLine,
+                        borderColor: COLOR_SOC_HALO,
+                        borderWidth: 5,
+                        pointRadius: 0,
+                        tension: 0.2,
+                        spanGaps: MAX_LINE_GAP_MS,
+                        yAxisID: "ySoc",
+                        order: 1,
+                    },
+                    {
+                        type: "line",
+                        label: "Car SoC %",
+                        data: evSocLine,
+                        borderColor: COLOR_EV_SOC,
+                        backgroundColor: COLOR_EV_SOC,
+                        borderWidth: 2.5,
+                        pointRadius: 0,
+                        tension: 0.2,
+                        spanGaps: MAX_LINE_GAP_MS,
+                        yAxisID: "ySoc",
+                        order: 0,
+                    },
                 ],
             },
             options: {
@@ -471,7 +511,11 @@
                                     const name = ctx.dataset.label.replace(/ \(kW\)$/, "");
                                     return `${name} ${ctx.parsed.y.toFixed(2)} kW`;
                                 }
-                                return `SoC ${ctx.parsed.y.toFixed(1)} %`;
+                                // Battery/car SoC share this axis; use the
+                                // dataset label (minus its trailing " %") so the
+                                // tooltip names which line you're hovering.
+                                const socName = String(ctx.dataset.label || "SoC").replace(/ %$/, "");
+                                return `${socName} ${ctx.parsed.y.toFixed(1)} %`;
                             },
                         },
                     },
@@ -520,15 +564,18 @@
 
     function updateChart(prices, readings, solarPoints) {
         if (!chart) return;
-        const { priceBars, priceColors, priceBorderWidths, socLine, solarLine, totalSolarLine } =
-            buildChartData(prices, readings, solarPoints);
+        const {
+            priceBars, priceColors, priceBorderWidths, socLine, evSocLine, solarLine, totalSolarLine,
+        } = buildChartData(prices, readings, solarPoints);
         // Datasets:
         //   0 = price bars
         //   1 = forecast solar (filled)
         //   2 = total-solar halo
         //   3 = total-solar line
         //   4 = SoC halo
-        //   5 = SoC line
+        //   5 = battery SoC line
+        //   6 = car-SoC halo
+        //   7 = car SoC line
         chart.data.datasets[0].data = priceBars;
         chart.data.datasets[0].backgroundColor = priceColors;
         chart.data.datasets[0].borderWidth = priceBorderWidths;
@@ -537,6 +584,8 @@
         chart.data.datasets[3].data = totalSolarLine;
         chart.data.datasets[4].data = socLine;
         chart.data.datasets[5].data = socLine;
+        chart.data.datasets[6].data = evSocLine;
+        chart.data.datasets[7].data = evSocLine;
         // Re-bind the x-axis window to the viewed day so prev/next nav
         // actually pans the chart instead of stretching today's bars.
         const startOfDay = new Date(viewedDate);
@@ -557,6 +606,40 @@
         return (row && row.last_payload) || {};
     }
 
+    function fmtAge(seconds) {
+        if (seconds == null) return null;
+        const m = Math.round(seconds / 60);
+        if (m < 1) return "just now";
+        if (m < 60) return m + " min ago";
+        const h = Math.floor(m / 60);
+        return h + "h" + String(m % 60).padStart(2, "0") + " ago";
+    }
+
+    // Tronity (EQS) SoC — the third main tile in the state card. Prefers the
+    // live cache (state.vehicle); falls back to the last-known value persisted
+    // on the reading. The meta line exposes the trust signals — record age
+    // (flagged when stale) and whether the car is within the home geofence — so
+    // a laggy/away SoC reads as exactly that.
+    function applyVehicleTile(vehicle, reading) {
+        const soc = (vehicle && vehicle.soc_pct != null)
+            ? vehicle.soc_pct
+            : (reading && reading.ev_soc_pct != null ? reading.ev_soc_pct : null);
+        setText("state-ev-soc", soc != null ? Math.round(soc) + "%" : "—");
+        const metaEl = document.getElementById("state-ev-meta");
+        if (!metaEl) return;
+        if (!vehicle) {
+            metaEl.textContent = reading && reading.ev_soc_pct != null ? "" : "not configured";
+            return;
+        }
+        const parts = [];
+        const age = fmtAge(vehicle.age_s);
+        if (age) parts.push(vehicle.fresh ? age : age + " (stale)");
+        if (vehicle.at_home === true) parts.push("home");
+        else if (vehicle.at_home === false) parts.push("away");
+        if (vehicle.charging) parts.push(String(vehicle.charging).toLowerCase());
+        metaEl.textContent = parts.length ? parts.join(" · ") : "—";
+    }
+
     function applyState(state) {
         const reading = state.reading || {};
         const decision = state.decision;
@@ -569,6 +652,7 @@
         const neg = (v) => (v == null ? null : -v);
         setText("tile-soc", reading.battery_soc_pct != null
             ? reading.battery_soc_pct.toFixed(1) + "%" : "—");
+        applyVehicleTile(state.vehicle, reading);
         setText("tile-batt-power", fmtInt(neg(reading.battery_power_w), " W"));
         setText("tile-house", fmtInt(reading.house_consumption_w, " W"));
         applyChargerTile(state, reading);

@@ -509,12 +509,13 @@ async def test_tick_persists_reading_and_decision(
     assert latest_decision is not None
     assert latest_decision.state == DecisionState.ON.value
     assert latest_decision.rule_fired == "positive_injection_price"
-    # solar_forecast, large_solar and etrel are conditional on optional config
-    # being present — none is configured in this test, so none should appear.
+    # solar_forecast, large_solar, etrel and tronity are conditional on optional
+    # config being present — none is configured in this test, so none appears.
     expected = {s.value for s in SourceName} - {
         SourceName.SOLAR_FORECAST.value,
         SourceName.LARGE_SOLAR.value,
         SourceName.ETREL.value,
+        SourceName.TRONITY.value,
     }
     assert expected <= set(sources.keys())
 

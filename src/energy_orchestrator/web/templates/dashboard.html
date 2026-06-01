@@ -50,6 +50,13 @@
             <span class="etrel-set-status" id="etrel-set-current-status"></span>
         </form>
     </div>
+    <div class="state-col state-col-right" id="state-tronity">
+        <div class="state-headline">
+            Tronity: <strong id="state-ev-soc">{% if reading and reading.ev_soc_pct is not none %}{{ "%.0f" | format(reading.ev_soc_pct) }}%{% else %}&mdash;{% endif %}</strong>
+        </div>
+        <div class="state-reason">EQS state of charge</div>
+        <div class="state-reason" id="state-ev-meta">&mdash;</div>
+    </div>
 </section>
 
 <section class="tiles">
@@ -132,7 +139,7 @@
     <div class="chart-card chart-card-tall">
         <canvas id="mainChart"></canvas>
     </div>
-    <p class="hint" id="chart-legend-hint">Bars = injection &euro;/kWh (left axis; green = negative-price hours, drawn full-width). Blue line = battery SoC % (right axis). Filled orange = forecast solar power, summed across arrays (far right axis, kW). Yellow line = measured total solar (small + large), kW.</p>
+    <p class="hint" id="chart-legend-hint">Bars = injection &euro;/kWh (left axis; green = negative-price hours, drawn full-width). Blue line = battery SoC % (right axis); red line = car (EQS) SoC % on the same axis. Filled orange = forecast solar power, summed across arrays (far right axis, kW). Yellow line = measured total solar (small + large), kW.</p>
 </section>
 
 <p class="hint" id="dashboard-refresh-status">Live &mdash; refreshing every 5 s.</p>

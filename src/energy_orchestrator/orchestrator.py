@@ -32,7 +32,7 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from energy_orchestrator.config.models import AppConfig, ChargerControlConfig
+from energy_orchestrator.config.models import AppConfig, ChargerControlConfig, TronityConfig
 from energy_orchestrator.data import UnitOfWork
 from energy_orchestrator.data.models import (
     Decision,
@@ -73,6 +73,13 @@ from energy_orchestrator.solar import (
     SolarProvider,
 )
 from energy_orchestrator.utils.clock import to_local
+from energy_orchestrator.vehicle import (
+    TronityProvider,
+    VehicleCache,
+    VehicleError,
+    VehicleProvider,
+    VehicleRecord,
+)
 from energy_orchestrator.web.override import OverrideController
 
 logger = structlog.stdlib.get_logger(__name__)
@@ -144,12 +151,17 @@ class TickLoop:
         override_controller: OverrideController,
         price_cache: PriceCache,
         solar_cache: SolarCache,
+        vehicle_cache: VehicleCache | None = None,
     ) -> None:
         self.config = config
         self._session_factory = session_factory
         self._override_controller = override_controller
         self._price_cache = price_cache
         self._solar_cache = solar_cache
+        # Shared with the web layer (the dashboard reads the EV SoC off it).
+        # Optional so the ~30 TickLoop test call-sites don't all have to thread
+        # one through; production wiring (web/app.py) injects the shared cache.
+        self._vehicle_cache = vehicle_cache if vehicle_cache is not None else VehicleCache()
 
         self._sonnen = create_device_client(config.sonnen)
         self._car_charger = create_device_client(config.homewizard.car_charger)
@@ -178,6 +190,11 @@ class TickLoop:
         self._price_provider: PriceProvider = create_price_provider(config.prices)
         self._solar_provider: SolarProvider | None = (
             ForecastSolarProvider(config.solar) if config.solar is not None else None
+        )
+        # Optional Tronity cloud link for the EV's state of charge. Read-only
+        # and slow-polled (each fetch wakes the car); inert when unconfigured.
+        self._vehicle_provider: VehicleProvider | None = (
+            TronityProvider(config.tronity) if config.tronity is not None else None
         )
         self._engine = DecisionEngine(config.decision)
         # Optional charger rule-control (separate decision domain from the
@@ -284,6 +301,9 @@ class TickLoop:
         if self._solar_provider is not None:
             with contextlib.suppress(Exception):
                 await self._solar_provider.close()
+        if self._vehicle_provider is not None:
+            with contextlib.suppress(Exception):
+                await self._vehicle_provider.close()
 
     async def _run(self) -> None:
         # First tick happens immediately; subsequent ticks honour the interval.
@@ -324,6 +344,7 @@ class TickLoop:
 
             await self._refresh_prices_if_stale(when)
             await self._refresh_solar_if_stale(when)
+            await self._refresh_vehicle_if_stale(when)
             current_price = get_current_hour_price(self._price_cache.points(), when)
 
             reading = self._build_reading(
@@ -524,6 +545,60 @@ class TickLoop:
                 "watt_hours_today": forecast.watt_hours_today,
             },
         )
+
+    async def _refresh_vehicle_if_stale(self, now: datetime) -> None:
+        """Slow-poll the EV's state of charge from Tronity into the cache.
+
+        Gated by the cache's own staleness clock (cadence =
+        ``tronity.poll_interval_s``) so the 5 s device tick doesn't hammer a
+        cloud API that wakes the car on every call. Read-only: the SoC is
+        surfaced on the dashboard but does not (yet) feed any charging rule.
+        A failure backs the cache off and is recorded on ``SourceStatus`` —
+        it never disturbs the rest of the tick.
+        """
+        if self._vehicle_provider is None or self.config.tronity is None:
+            return
+        max_age = timedelta(seconds=self.config.tronity.poll_interval_s)
+        if not self._vehicle_cache.is_stale(now, max_age):
+            return
+        try:
+            record = await self._vehicle_provider.fetch_record()
+        except VehicleError as e:
+            self._vehicle_cache.mark_failed(now)
+            await self._record_status_error(SourceName.TRONITY, str(e))
+            return
+        except Exception as e:  # defensive — never let the EV link kill the tick
+            self._vehicle_cache.mark_failed(now)
+            logger.exception("unexpected error fetching vehicle record")
+            await self._record_status_error(SourceName.TRONITY, f"unexpected: {e}")
+            return
+        self._vehicle_cache.replace(record, now, max_age)
+        await self._record_status_success(
+            SourceName.TRONITY, self._vehicle_status_payload(record, now)
+        )
+
+    def _vehicle_status_payload(self, record: VehicleRecord, now: datetime) -> dict[str, Any]:
+        """JSON-serializable snapshot for SourceStatus / the debug board.
+
+        ``fresh`` and ``at_home`` are the trust signals a future charge-control
+        gate would consult (per the EQS design notes: SoC is only trustworthy
+        when recent AND geofence-confirmed at home).
+        """
+        cfg = self.config.tronity
+        assert cfg is not None  # caller guards; re-stated for the type checker
+        age = record.age(now)
+        return {
+            "soc_pct": record.soc_pct,
+            "plugged": record.plugged,
+            "charging": record.charging,
+            "range_km": record.range_km,
+            "recorded_at": record.recorded_at.isoformat() if record.recorded_at else None,
+            "age_s": age.total_seconds() if age is not None else None,
+            "fresh": record.is_fresh(now, timedelta(seconds=cfg.stale_after_s)),
+            "at_home": record.at_home(
+                cfg.home_latitude, cfg.home_longitude, cfg.geofence_radius_m
+            ),
+        }
 
     async def _persist_prices(self, points: Sequence[PricePoint]) -> None:
         if not points:
@@ -1067,6 +1142,11 @@ class TickLoop:
         price: PricePoint | None,
     ) -> Reading:
         sonnen_data = sonnen.data if sonnen is not None else {}
+        # Last-known EV SoC from the slow-polled Tronity cache (may lag the
+        # live charger by 30-40 min). None when Tronity is unconfigured or no
+        # record has come back yet.
+        vehicle_record = self._vehicle_cache.record()
+        ev_soc_pct = vehicle_record.soc_pct if vehicle_record is not None else None
         return Reading(
             timestamp=when,
             battery_soc_pct=_as_float(sonnen_data.get("soc_pct")),
@@ -1083,6 +1163,7 @@ class TickLoop:
                 _as_float(large.data.get("active_power_w")) if large is not None else None
             ),
             etrel_power_w=(_as_float(etrel.data.get("power_w")) if etrel is not None else None),
+            ev_soc_pct=ev_soc_pct,
             injection_price_eur_per_kwh=(
                 price.injection_eur_per_kwh if price is not None else None
             ),
@@ -1159,6 +1240,12 @@ def _connection_fields_changed(old: AppConfig, new: AppConfig) -> list[str]:
         changed.append("solaredge")
     if old.etrel != new.etrel:
         changed.append("etrel")
+    # Tronity: only the connection-relevant fields (credentials, base URL, VIN,
+    # HTTP timeout/retry) are baked into the provider at startup. The cadence /
+    # staleness / geofence are read live by the tick loop each refresh, so they
+    # apply without a restart and are deliberately excluded here.
+    if _tronity_connection_changed(old.tronity, new.tronity):
+        changed.append("tronity")
     if old.web != new.web:
         changed.append("web")
     # Pricing: only the provider identity + credentials need a restart; the
@@ -1172,6 +1259,27 @@ def _connection_fields_changed(old: AppConfig, new: AppConfig) -> list[str]:
     if old.logging.log_dir != new.logging.log_dir:
         changed.append("logging.log_dir")
     return changed
+
+
+def _tronity_connection_changed(old: TronityConfig | None, new: TronityConfig | None) -> bool:
+    """True when a Tronity change requires rebuilding the provider (restart).
+
+    Only the fields the provider object captures at construction count:
+    credentials, base URL, VIN, and the HTTP timeout/retry. Cadence, staleness
+    and geofence are read live each refresh and apply without a restart.
+    """
+    if (old is None) != (new is None):
+        return True
+    if old is None or new is None:
+        return False
+    return (
+        old.client_id != new.client_id
+        or old.client_secret != new.client_secret
+        or old.base_url != new.base_url
+        or old.vin != new.vin
+        or old.timeout_s != new.timeout_s
+        or old.retry_count != new.retry_count
+    )
 
 
 __all__ = ["TickLoop"]

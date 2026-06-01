@@ -12,6 +12,7 @@ from energy_orchestrator.config import (
     SolarEdgeConfig,
     SonnenApiVersion,
     SonnenBatterieConfig,
+    TronityConfig,
 )
 
 # ----- host validation ---------------------------------------------------------
@@ -156,3 +157,36 @@ def test_models_are_frozen() -> None:
 def test_extra_fields_rejected() -> None:
     with pytest.raises(ValidationError, match="Extra inputs"):
         DecisionConfig(unknown_field=1)  # type: ignore[call-arg]
+
+
+# ----- tronity -----------------------------------------------------------------
+
+
+def test_tronity_defaults() -> None:
+    cfg = TronityConfig(client_id="cid", client_secret="secret")
+    assert cfg.vin is None
+    assert cfg.base_url == "https://api.tronity.tech"
+    assert cfg.poll_interval_s == 900.0
+    assert cfg.stale_after_s == 3600.0
+    assert cfg.home_latitude is None
+
+
+def test_tronity_geofence_requires_both_coords() -> None:
+    with pytest.raises(ValidationError, match="must be set together"):
+        TronityConfig(client_id="cid", client_secret="secret", home_latitude=51.0)
+
+
+def test_tronity_geofence_accepts_both_coords() -> None:
+    cfg = TronityConfig(
+        client_id="cid",
+        client_secret="secret",
+        home_latitude=51.0,
+        home_longitude=3.7,
+    )
+    assert cfg.home_latitude == 51.0
+    assert cfg.home_longitude == 3.7
+
+
+def test_tronity_poll_interval_floor() -> None:
+    with pytest.raises(ValidationError):
+        TronityConfig(client_id="cid", client_secret="secret", poll_interval_s=10.0)

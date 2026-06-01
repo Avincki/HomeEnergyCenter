@@ -346,6 +346,21 @@ def _config_view(config: AppConfig) -> dict[str, Any]:
                 "unit_id": config.etrel.unit_id,
             }
         ),
+        "tronity": (
+            None
+            if config.tronity is None
+            else {
+                "client_id": "***" if config.tronity.client_id else None,
+                "client_secret": "***" if config.tronity.client_secret else None,
+                "vin": config.tronity.vin,
+                "base_url": config.tronity.base_url,
+                "poll_interval_s": config.tronity.poll_interval_s,
+                "stale_after_s": config.tronity.stale_after_s,
+                "home_latitude": config.tronity.home_latitude,
+                "home_longitude": config.tronity.home_longitude,
+                "geofence_radius_m": config.tronity.geofence_radius_m,
+            }
+        ),
         "prices": {
             "provider": config.prices.provider.value,
             "area": config.prices.area,

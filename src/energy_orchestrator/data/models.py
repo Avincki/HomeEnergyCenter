@@ -35,6 +35,7 @@ class SourceName(StrEnum):
     LARGE_SOLAR = "large_solar"
     SOLAREDGE = "solaredge"
     ETREL = "etrel"
+    TRONITY = "tronity"
     PRICES = "prices"
     SOLAR_FORECAST = "solar_forecast"
 
@@ -60,6 +61,10 @@ class Reading(Base):
     # Etrel INCH charger active-power total (Modbus reg 26). The HomeWizard
     # car_charger meter measures Tesla + Etrel; subtracting this yields Tesla.
     etrel_power_w: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # EV (Mercedes EQS) state of charge from Tronity. Last-known value from the
+    # slow-polled cloud link; may lag the live charger by 30-40 min. None when
+    # Tronity is unconfigured or hasn't returned a record yet.
+    ev_soc_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
     injection_price_eur_per_kwh: Mapped[float | None] = mapped_column(Float, nullable=True)
     consumption_price_eur_per_kwh: Mapped[float | None] = mapped_column(Float, nullable=True)
 

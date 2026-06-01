@@ -156,6 +156,7 @@ async def test_health_lists_all_expected_sources(client: AsyncClient) -> None:
         "large_solar",
         "solaredge",
         "etrel",
+        "tronity",
         "prices",
         "solar_forecast",
     }
@@ -175,6 +176,7 @@ async def test_health_ok_when_recent_success(client: AsyncClient) -> None:
             SourceName.LARGE_SOLAR,
             SourceName.SOLAREDGE,
             SourceName.ETREL,
+            SourceName.TRONITY,
             SourceName.PRICES,
             SourceName.SOLAR_FORECAST,
         ):

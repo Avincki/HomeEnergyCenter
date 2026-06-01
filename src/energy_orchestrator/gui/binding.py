@@ -70,6 +70,10 @@ def config_to_form(config: AppConfig) -> AppConfigForm:
     # from the bulk flatten — otherwise _flatten would emit nested junk keys.
     # The one tunable scalar we DO render (calibration_factor) is re-added below.
     solar = nested.pop("solar", None)
+    # Tronity is YAML-only (credentials are SecretStr; flattening them would
+    # emit the masked "**********" repr and corrupt the file on save). Drop it
+    # from the flatten and carry it through baseline on save, exactly like solar.
+    nested.pop("tronity", None)
     # Same treatment for optional nested sub-sections — a None value would
     # become a stray ``homewizard.large_solar: ""`` form key that Pydantic
     # would later reject as not-a-LargeSolarConfig.
@@ -171,6 +175,26 @@ def form_to_config(
         # A partial solar from the form can't build a valid SolarConfig
         # (needs lat/lon/planes) and there's no baseline to merge into — drop it.
         nested.pop("solar", None)
+
+    # Tronity is YAML-only (not in the form). Carry it through from baseline so
+    # a web-form save preserves the section (and its secrets) untouched.
+    if baseline is not None and baseline.tronity is not None:
+        bt = baseline.tronity
+        nested["tronity"] = {
+            "client_id": bt.client_id.get_secret_value(),
+            "client_secret": bt.client_secret.get_secret_value(),
+            "vin": bt.vin,
+            "base_url": bt.base_url,
+            "poll_interval_s": bt.poll_interval_s,
+            "timeout_s": bt.timeout_s,
+            "retry_count": bt.retry_count,
+            "stale_after_s": bt.stale_after_s,
+            "home_latitude": bt.home_latitude,
+            "home_longitude": bt.home_longitude,
+            "geofence_radius_m": bt.geofence_radius_m,
+        }
+    else:
+        nested.pop("tronity", None)
 
     try:
         config = AppConfig.model_validate(nested)
@@ -378,6 +402,20 @@ def _config_to_plain_dict(config: AppConfig) -> dict[str, Any]:
             "port": config.web.port,
         },
     }
+    if config.tronity is not None:
+        out["tronity"] = {
+            "client_id": _secret_or_none(config.tronity.client_id),
+            "client_secret": _secret_or_none(config.tronity.client_secret),
+            "vin": config.tronity.vin,
+            "base_url": config.tronity.base_url,
+            "poll_interval_s": config.tronity.poll_interval_s,
+            "timeout_s": config.tronity.timeout_s,
+            "retry_count": config.tronity.retry_count,
+            "stale_after_s": config.tronity.stale_after_s,
+            "home_latitude": config.tronity.home_latitude,
+            "home_longitude": config.tronity.home_longitude,
+            "geofence_radius_m": config.tronity.geofence_radius_m,
+        }
     if config.solar is not None:
         out["solar"] = {
             "latitude": config.solar.latitude,

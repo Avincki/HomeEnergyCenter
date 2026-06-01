@@ -21,6 +21,7 @@ from energy_orchestrator.config.models import (
     SonnenApiVersion,
     SonnenBatterieConfig,
     StorageConfig,
+    TronityConfig,
     WebConfig,
 )
 from energy_orchestrator.gui.binding import (
@@ -135,6 +136,80 @@ def test_form_to_config_preserves_custom_base_url() -> None:
     assert errors == {}
     assert rebuilt is not None
     assert rebuilt.prices.base_url == "https://example.invalid/api"
+
+
+def _baseline_with_tronity() -> AppConfig:
+    return _baseline().model_copy(
+        update={
+            "tronity": TronityConfig(
+                client_id="cid-123",
+                client_secret="sec-456",
+                vin="WDB789",
+                home_latitude=51.05,
+                home_longitude=3.72,
+            )
+        }
+    )
+
+
+def test_config_to_form_exposes_tronity_fields_and_unwraps_secrets() -> None:
+    form = config_to_form(_baseline_with_tronity())
+    assert form["tronity.client_id"] == "cid-123"
+    assert form["tronity.client_secret"] == "sec-456"
+    assert form["tronity.vin"] == "WDB789"
+    assert form["tronity.home_latitude"] == "51.05"
+
+
+def test_config_to_form_renders_blank_tronity_when_disabled() -> None:
+    # No tronity configured -> the panel still renders blank, editable inputs.
+    form = config_to_form(_baseline())
+    assert form["tronity.client_id"] == ""
+    assert form["tronity.client_secret"] == ""
+    assert form["tronity.poll_interval_s"] == "900.0"
+
+
+def test_form_to_config_round_trips_tronity() -> None:
+    original = _baseline_with_tronity()
+    form = config_to_form(original)
+    rebuilt, errors = form_to_config(form)
+    assert errors == {}
+    assert rebuilt is not None
+    assert rebuilt.tronity is not None
+    assert rebuilt.tronity.client_id.get_secret_value() == "cid-123"
+    assert rebuilt.tronity.client_secret.get_secret_value() == "sec-456"
+    assert rebuilt.tronity.vin == "WDB789"
+    assert rebuilt.tronity.home_latitude == 51.05
+
+
+def test_form_to_config_blank_credentials_disable_tronity() -> None:
+    form = config_to_form(_baseline_with_tronity())
+    form["tronity.client_id"] = ""
+    form["tronity.client_secret"] = ""
+    rebuilt, errors = form_to_config(form)
+    assert errors == {}
+    assert rebuilt is not None
+    assert rebuilt.tronity is None
+
+
+def test_form_to_config_enables_tronity_from_blank() -> None:
+    form = config_to_form(_baseline())  # starts disabled
+    form["tronity.client_id"] = "new-id"
+    form["tronity.client_secret"] = "new-secret"
+    rebuilt, errors = form_to_config(form)
+    assert errors == {}
+    assert rebuilt is not None
+    assert rebuilt.tronity is not None
+    assert rebuilt.tronity.client_id.get_secret_value() == "new-id"
+    # Untouched defaults from the seeded blank form carry through.
+    assert rebuilt.tronity.poll_interval_s == 900.0
+
+
+def test_form_to_config_lone_geofence_coord_is_rejected() -> None:
+    form = config_to_form(_baseline_with_tronity())
+    form["tronity.home_longitude"] = ""  # leave only latitude set
+    rebuilt, errors = form_to_config(form)
+    assert rebuilt is None
+    assert any("set together" in v for v in errors.values())
 
 
 def test_form_to_config_rejects_csv_provider_without_csv_path() -> None:

@@ -117,6 +117,55 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                 ),
             ),
             WebSection(
+                "Tronity — EV state of charge (optional)",
+                (
+                    WebField(
+                        "Client ID",
+                        "tronity.client_id",
+                        "password",
+                        hint="from app.tronity.tech — fill BOTH client fields to enable, "
+                        "blank to disable",
+                    ),
+                    WebField("Client secret", "tronity.client_secret", "password"),
+                    WebField(
+                        "VIN",
+                        "tronity.vin",
+                        hint="optional — only needed if the account has more than one vehicle",
+                    ),
+                    WebField(
+                        "Poll interval (s)",
+                        "tronity.poll_interval_s",
+                        hint="long on purpose: each poll wakes the car / drains its 12 V battery",
+                    ),
+                    WebField(
+                        "Stale after (s)",
+                        "tronity.stale_after_s",
+                        hint="SoC older than this is flagged not-fresh",
+                    ),
+                    WebField(
+                        "Home latitude",
+                        "tronity.home_latitude",
+                        hint="optional geofence — set BOTH lat & lon to confirm the car is at "
+                        "home. Auto-filled from this device's IP location (city-level — refine "
+                        "if you want a tight geofence)",
+                    ),
+                    WebField("Home longitude", "tronity.home_longitude"),
+                    WebField(
+                        "Geofence radius (m)",
+                        "tronity.geofence_radius_m",
+                        hint="widened to ~25 km when auto-filled from the device IP "
+                        "(coarse); lower it if you enter precise coordinates",
+                    ),
+                    WebField("Timeout (s)", "tronity.timeout_s"),
+                    WebField("Retry count", "tronity.retry_count"),
+                    WebField(
+                        "Base URL",
+                        "tronity.base_url",
+                        hint="advanced — leave as default unless testing against a mock",
+                    ),
+                ),
+            ),
+            WebSection(
                 "Solar forecast (Forecast.Solar)",
                 (
                     WebField(

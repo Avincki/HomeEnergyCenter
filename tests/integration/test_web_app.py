@@ -189,6 +189,50 @@ async def test_health_ok_when_recent_success(client: AsyncClient) -> None:
     assert all(s["status"] == "OK" for s in body["sources"])
 
 
+async def test_config_autofills_geofence_from_device_location(client: AsyncClient) -> None:
+    """GET /config pre-fills the Tronity geofence from the device's IP location.
+
+    The location is preset on app.state so no real geolocation call is made;
+    the widened radius reflects the city-level accuracy.
+    """
+    app = client._transport.app  # type: ignore[attr-defined]
+    app.state.device_geolocation = (51.0543, 3.7174)
+
+    resp = await client.get("/config")
+    assert resp.status_code == 200
+    html = resp.text
+    assert 'name="tronity.home_latitude" value="51.054300"' in html
+    assert 'name="tronity.home_longitude" value="3.717400"' in html
+    assert 'name="tronity.geofence_radius_m" value="25000"' in html
+
+
+async def test_config_keeps_saved_geofence_over_device_location(
+    client: AsyncClient, tmp_path: Path
+) -> None:
+    """A configured geofence is never overridden by the device-location suggestion."""
+    from energy_orchestrator.config.models import TronityConfig
+
+    app = client._transport.app  # type: ignore[attr-defined]
+    app.state.device_geolocation = (10.0, 20.0)
+    base = app.state.config
+    app.state.config = base.model_copy(
+        update={
+            "tronity": TronityConfig(
+                client_id="cid",
+                client_secret="sec",
+                home_latitude=51.5,
+                home_longitude=3.5,
+            )
+        }
+    )
+
+    resp = await client.get("/config")
+    html = resp.text
+    assert 'name="tronity.home_latitude" value="51.5"' in html
+    # The device suggestion (10.0) must NOT appear.
+    assert 'value="10.000000"' not in html
+
+
 async def test_clear_errors_nulls_error_columns(client: AsyncClient) -> None:
     """POST /api/source-status/clear-errors blanks last_error_at and
     last_error_message on every row, leaving last_success_at intact."""

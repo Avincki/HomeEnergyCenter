@@ -46,6 +46,8 @@ _SECRET_FIELDS: frozenset[str] = frozenset(
     {
         "sonnen.auth_token",
         "prices.api_key",
+        "tronity.client_id",
+        "tronity.client_secret",
     }
 )
 
@@ -55,6 +57,14 @@ _SECRET_FIELDS: frozenset[str] = frozenset(
 _OPTIONAL_STRING_FIELDS: frozenset[str] = frozenset(
     {
         "prices.base_url",
+        # Tronity optionals: blank -> None so the model default / "unset"
+        # applies. VIN is only needed to disambiguate multiple vehicles;
+        # base_url falls back to the public API; the geofence coords are
+        # optional (and validated as a pair by the model).
+        "tronity.vin",
+        "tronity.base_url",
+        "tronity.home_latitude",
+        "tronity.home_longitude",
     }
 )
 
@@ -70,10 +80,6 @@ def config_to_form(config: AppConfig) -> AppConfigForm:
     # from the bulk flatten — otherwise _flatten would emit nested junk keys.
     # The one tunable scalar we DO render (calibration_factor) is re-added below.
     solar = nested.pop("solar", None)
-    # Tronity is YAML-only (credentials are SecretStr; flattening them would
-    # emit the masked "**********" repr and corrupt the file on save). Drop it
-    # from the flatten and carry it through baseline on save, exactly like solar.
-    nested.pop("tronity", None)
     # Same treatment for optional nested sub-sections — a None value would
     # become a stray ``homewizard.large_solar: ""`` form key that Pydantic
     # would later reject as not-a-LargeSolarConfig.
@@ -91,6 +97,24 @@ def config_to_form(config: AppConfig) -> AppConfigForm:
             "unit_id": "1",
             "timeout_s": "5.0",
             "retry_count": "3",
+        }
+    # Same for the optional ``tronity`` section: when disabled (None), seed the
+    # form with blank credentials + defaults so the panel renders editable
+    # inputs the user can fill to enable it. The two credential fields are
+    # SecretStr (in _SECRET_FIELDS) and filled in by the secret loop below.
+    if nested.get("tronity") is None:
+        nested["tronity"] = {
+            "client_id": "",
+            "client_secret": "",
+            "vin": "",
+            "base_url": "https://api.tronity.tech",
+            "poll_interval_s": "900.0",
+            "timeout_s": "10.0",
+            "retry_count": "2",
+            "stale_after_s": "3600.0",
+            "home_latitude": "",
+            "home_longitude": "",
+            "geofence_radius_m": "200.0",
         }
     flat: AppConfigForm = {}
     _flatten(nested, prefix=(), out=flat)
@@ -176,25 +200,18 @@ def form_to_config(
         # (needs lat/lon/planes) and there's no baseline to merge into — drop it.
         nested.pop("solar", None)
 
-    # Tronity is YAML-only (not in the form). Carry it through from baseline so
-    # a web-form save preserves the section (and its secrets) untouched.
-    if baseline is not None and baseline.tronity is not None:
-        bt = baseline.tronity
-        nested["tronity"] = {
-            "client_id": bt.client_id.get_secret_value(),
-            "client_secret": bt.client_secret.get_secret_value(),
-            "vin": bt.vin,
-            "base_url": bt.base_url,
-            "poll_interval_s": bt.poll_interval_s,
-            "timeout_s": bt.timeout_s,
-            "retry_count": bt.retry_count,
-            "stale_after_s": bt.stale_after_s,
-            "home_latitude": bt.home_latitude,
-            "home_longitude": bt.home_longitude,
-            "geofence_radius_m": bt.geofence_radius_m,
-        }
-    else:
-        nested.pop("tronity", None)
+    # Tronity is an optional section driven by the form: both credentials are
+    # required to enable it. Blank either one (they were coerced to None above,
+    # being secret fields) and the whole section is disabled — mirrors how a
+    # blank Etrel host disables that device — so AppConfig.tronity falls back to
+    # its None default instead of failing required-field validation.
+    tr = nested.get("tronity")
+    if (
+        not isinstance(tr, dict)
+        or not str(tr.get("client_id") or "").strip()
+        or not str(tr.get("client_secret") or "").strip()
+    ):
+        nested["tronity"] = None
 
     try:
         config = AppConfig.model_validate(nested)

@@ -56,6 +56,13 @@ def main() -> None:
         host=config.web.host,
         port=config.web.port,
         log_config=None,  # use the root logger we just configured
+        # Bound the graceful shutdown. On SIGTERM (systemd stop) uvicorn waits
+        # for open connections to drain; the /api/logs/stream SSE endpoint never
+        # ends on its own, so an open /logs or /debug tab would otherwise block
+        # the stop until systemd's TimeoutStopSec (default 90 s) SIGKILLs us.
+        # 10 s force-closes lingering streams so the lifespan shutdown (tick
+        # loop + device sessions) still runs cleanly and the process exits fast.
+        timeout_graceful_shutdown=10,
         ssl_keyfile=ssl_keyfile,
         ssl_certfile=ssl_certfile,
     )

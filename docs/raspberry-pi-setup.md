@@ -221,6 +221,11 @@ Environment=EO_CONFIG=/opt/homecenter/HomeEnergyCenter/config.yaml
 ExecStart=/opt/homecenter/HomeEnergyCenter/.venv/bin/python main.py
 Restart=on-failure
 RestartSec=5
+# Stop fast. uvicorn caps its own graceful shutdown at 10 s
+# (timeout_graceful_shutdown in main.py) so an open /logs or /debug SSE stream
+# can't hold the process open; this is just the systemd backstop. Without it,
+# the default 90 s TimeoutStopSec makes `systemctl stop` feel like it hangs.
+TimeoutStopSec=15
 # Light hardening — it only needs LAN access and its own data dir.
 NoNewPrivileges=true
 PrivateTmp=true

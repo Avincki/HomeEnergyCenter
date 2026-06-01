@@ -234,7 +234,7 @@ class TronityProvider(VehicleProvider):
         return payload
 
     def _parse_record(self, payload: dict[str, Any], fetched_at: datetime) -> VehicleRecord:
-        return VehicleRecord(
+        record = VehicleRecord(
             fetched_at=fetched_at,
             soc_pct=_as_float(payload.get("level")),
             plugged=_as_bool(payload.get("plugged")),
@@ -246,6 +246,18 @@ class TronityProvider(VehicleProvider):
             longitude=_as_float(payload.get("longitude")),
             recorded_at=_epoch_to_utc(payload.get("timestamp")),
         )
+        if record.soc_pct is None:
+            # We parsed a record but found no SoC under "level" — either the
+            # field names/shape differ from what we expect, or the vehicle has
+            # not reported any telemetry yet. Log the raw payload (keys + values)
+            # so the actual structure is visible; only fires while it's broken
+            # (a populated record has a SoC and skips this).
+            logger.warning(
+                "tronity last_record has no SoC ('level') — raw payload logged for inspection",
+                payload_keys=sorted(payload.keys()),
+                payload=payload,
+            )
+        return record
 
 
 def _as_float(value: Any) -> float | None:

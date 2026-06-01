@@ -196,6 +196,20 @@ class TickLoop:
         self._vehicle_provider: VehicleProvider | None = (
             TronityProvider(config.tronity) if config.tronity is not None else None
         )
+        # One-shot guard so the "configured but provider not built" warning
+        # (the add-via-web-form-without-restart case) logs once, not every tick.
+        self._vehicle_provider_warned: bool = False
+        if config.tronity is not None:
+            # Startup breadcrumb: if this line is absent from the log, config
+            # .tronity is None — the section isn't in the config.yaml the
+            # service loaded (or a blank-credentials web save disabled it).
+            logger.info(
+                "tronity provider active",
+                base_url=config.tronity.base_url,
+                vin=config.tronity.vin,
+                poll_interval_s=config.tronity.poll_interval_s,
+                geofence_set=config.tronity.home_latitude is not None,
+            )
         self._engine = DecisionEngine(config.decision)
         # Optional charger rule-control (separate decision domain from the
         # inverter engine). Needs the Etrel device (the actuator) and the solar
@@ -556,15 +570,31 @@ class TickLoop:
         A failure backs the cache off and is recorded on ``SourceStatus`` —
         it never disturbs the rest of the tick.
         """
-        if self._vehicle_provider is None or self.config.tronity is None:
+        if self.config.tronity is None:
+            return
+        if self._vehicle_provider is None:
+            # Configured but no client built — Tronity was added via the web
+            # form without restarting (the provider is built at startup only).
+            # Warn once so this isn't a silent dead-end.
+            if not self._vehicle_provider_warned:
+                self._vehicle_provider_warned = True
+                logger.warning(
+                    "tronity configured but provider inactive — restart the service to "
+                    "start reading EV SoC (the client is built at startup, not hot-reloaded)"
+                )
             return
         max_age = timedelta(seconds=self.config.tronity.poll_interval_s)
         if not self._vehicle_cache.is_stale(now, max_age):
             return
+        logger.info("tronity refresh: fetching latest record")
         try:
             record = await self._vehicle_provider.fetch_record()
         except VehicleError as e:
             self._vehicle_cache.mark_failed(now)
+            # Surface the failure in the live log too — previously it only
+            # updated the source-status row, so a bad VIN/credentials looked
+            # like silence in the log stream.
+            logger.warning("tronity fetch failed", error=str(e))
             await self._record_status_error(SourceName.TRONITY, str(e))
             return
         except Exception as e:  # defensive — never let the EV link kill the tick
@@ -573,9 +603,9 @@ class TickLoop:
             await self._record_status_error(SourceName.TRONITY, f"unexpected: {e}")
             return
         self._vehicle_cache.replace(record, now, max_age)
-        await self._record_status_success(
-            SourceName.TRONITY, self._vehicle_status_payload(record, now)
-        )
+        payload = self._vehicle_status_payload(record, now)
+        logger.info("tronity record fetched", **payload)
+        await self._record_status_success(SourceName.TRONITY, payload)
 
     def _vehicle_status_payload(self, record: VehicleRecord, now: datetime) -> dict[str, Any]:
         """JSON-serializable snapshot for SourceStatus / the debug board.

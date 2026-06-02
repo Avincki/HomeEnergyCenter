@@ -539,7 +539,9 @@
                         position: "left",
                         title: { display: true, text: "€/kWh", color: TEXT_MUTED },
                         ticks: { color: TEXT_MUTED },
-                        grid: { color: GRID_FAINT },
+                        // Gridlines are anchored to the 0–100% SoC axis instead,
+                        // so the horizontal lines read as SoC levels, not prices.
+                        grid: { display: false },
                     },
                     ySoc: {
                         position: "right",
@@ -547,7 +549,9 @@
                         max: 100,
                         title: { display: true, text: "SoC %", color: TEXT_MUTED },
                         ticks: { color: TEXT_MUTED },
-                        grid: { display: false },
+                        // Owns the horizontal gridlines (0/20/.../100%) — the
+                        // price axis no longer draws them.
+                        grid: { display: true, color: GRID_FAINT },
                     },
                     ySolar: {
                         position: "right",
@@ -624,7 +628,12 @@
         const soc = (vehicle && vehicle.soc_pct != null)
             ? vehicle.soc_pct
             : (reading && reading.ev_soc_pct != null ? reading.ev_soc_pct : null);
-        setText("state-ev-soc", soc != null ? Math.round(soc) + "%" : "—");
+        // Estimated range rides alongside the SoC (only the live cache carries
+        // it — the persisted reading has SoC only), e.g. "75% · 320 km".
+        const rangeKm = vehicle && vehicle.range_km != null ? vehicle.range_km : null;
+        const socText = soc != null ? Math.round(soc) + "%" : "—";
+        setText("state-ev-soc",
+            rangeKm != null ? `${socText} · ${Math.round(rangeKm)} km` : socText);
         const metaEl = document.getElementById("state-ev-meta");
         if (!metaEl) return;
         if (!vehicle) {
@@ -634,8 +643,8 @@
         const parts = [];
         const age = fmtAge(vehicle.age_s);
         if (age) parts.push(vehicle.fresh ? age : age + " (stale)");
-        if (vehicle.at_home === true) parts.push("home");
-        else if (vehicle.at_home === false) parts.push("away");
+        if (vehicle.at_home === true) parts.push("At home");
+        else if (vehicle.at_home === false) parts.push("Away");
         if (vehicle.charging) parts.push(String(vehicle.charging).toLowerCase());
         metaEl.textContent = parts.length ? parts.join(" · ") : "—";
     }

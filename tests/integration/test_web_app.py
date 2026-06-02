@@ -189,31 +189,22 @@ async def test_health_ok_when_recent_success(client: AsyncClient) -> None:
     assert all(s["status"] == "OK" for s in body["sources"])
 
 
-async def test_config_autofills_geofence_from_device_location(client: AsyncClient) -> None:
-    """GET /config pre-fills the Tronity geofence from the device's IP location.
-
-    The location is preset on app.state so no real geolocation call is made;
-    the widened radius reflects the city-level accuracy.
-    """
-    app = client._transport.app  # type: ignore[attr-defined]
-    app.state.device_geolocation = (51.0543, 3.7174)
-
+async def test_config_prefills_geofence_with_default_location(client: AsyncClient) -> None:
+    """GET /config pre-fills the Tronity geofence with the fixed default home location."""
     resp = await client.get("/config")
     assert resp.status_code == 200
     html = resp.text
-    assert 'name="tronity.home_latitude" value="51.054300"' in html
-    assert 'name="tronity.home_longitude" value="3.717400"' in html
-    assert 'name="tronity.geofence_radius_m" value="25000"' in html
+    assert 'name="tronity.home_latitude" value="51.063500"' in html
+    assert 'name="tronity.home_longitude" value="3.750111"' in html
 
 
-async def test_config_keeps_saved_geofence_over_device_location(
+async def test_config_keeps_saved_geofence_over_default_location(
     client: AsyncClient, tmp_path: Path
 ) -> None:
-    """A configured geofence is never overridden by the device-location suggestion."""
+    """A configured geofence is never overridden by the default-location suggestion."""
     from energy_orchestrator.config.models import TronityConfig
 
     app = client._transport.app  # type: ignore[attr-defined]
-    app.state.device_geolocation = (10.0, 20.0)
     base = app.state.config
     app.state.config = base.model_copy(
         update={
@@ -229,8 +220,8 @@ async def test_config_keeps_saved_geofence_over_device_location(
     resp = await client.get("/config")
     html = resp.text
     assert 'name="tronity.home_latitude" value="51.5"' in html
-    # The device suggestion (10.0) must NOT appear.
-    assert 'value="10.000000"' not in html
+    # The default suggestion must NOT appear over saved coordinates.
+    assert 'value="51.063500"' not in html
 
 
 async def test_clear_errors_nulls_error_columns(client: AsyncClient) -> None:

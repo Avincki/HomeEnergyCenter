@@ -146,15 +146,13 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                         "Home latitude",
                         "tronity.home_latitude",
                         hint="optional geofence — set BOTH lat & lon to confirm the car is at "
-                        "home. Auto-filled from this device's IP location (city-level — refine "
-                        "if you want a tight geofence)",
+                        "home. Pre-filled with the install's home coordinates; edit to relocate",
                     ),
                     WebField("Home longitude", "tronity.home_longitude"),
                     WebField(
                         "Geofence radius (m)",
                         "tronity.geofence_radius_m",
-                        hint="widened to ~25 km when auto-filled from the device IP "
-                        "(coarse); lower it if you enter precise coordinates",
+                        hint="how close the car must be to count as 'at home'",
                     ),
                     WebField("Timeout (s)", "tronity.timeout_s"),
                     WebField("Retry count", "tronity.retry_count"),

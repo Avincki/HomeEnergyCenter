@@ -171,7 +171,7 @@ class TronityConfig(_StrictModel):
     # when unset "at home" can't be computed and is reported as null.
     home_latitude: float | None = Field(default=None, ge=-90.0, le=90.0)
     home_longitude: float | None = Field(default=None, ge=-180.0, le=180.0)
-    geofence_radius_m: float = Field(default=200.0, gt=0.0, le=100000.0)
+    geofence_radius_m: float = Field(default=250.0, gt=0.0, le=100000.0)
 
     @model_validator(mode="after")
     def _geofence_consistent(self) -> TronityConfig:

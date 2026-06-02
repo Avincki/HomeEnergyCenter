@@ -21,7 +21,6 @@ from energy_orchestrator.gui.binding import (
 )
 from energy_orchestrator.solar import SolarCache
 from energy_orchestrator.utils.clock import to_local
-from energy_orchestrator.utils.geolocation import detect_device_location
 from energy_orchestrator.web.api import _classify_source_status
 from energy_orchestrator.web.config_form import SECTIONS
 from energy_orchestrator.web.dependencies import (
@@ -173,7 +172,7 @@ async def config_form(
     config_path: ConfigPathDep,
 ) -> HTMLResponse:
     form = config_to_form(config)
-    await _suggest_device_geolocation(request, form)
+    _suggest_device_geolocation(form)
     return _render_config_form(
         request=request,
         form=form,
@@ -184,46 +183,24 @@ async def config_form(
     )
 
 
-# Suggested geofence radius (m) when the lat/lon are auto-filled from the
-# device's IP. IP geolocation is only city-level accurate, so a tight radius
-# would read the car as "away" even at home — widen it so "at home" resolves.
-_IP_GEOFENCE_RADIUS_M = "25000"
+# Fixed default home location for the Tronity geofence. These are the actual
+# install coordinates, accurate to a few metres, so they're used as the default
+# suggestion (no coarse IP lookup, no widened radius needed).
+_DEFAULT_HOME_LAT = 51.063500
+_DEFAULT_HOME_LON = 3.750111
 
 
-async def _device_geolocation(request: Request) -> tuple[float, float] | None:
-    """Resolve (and process-cache) this host's approximate lat/lon.
+def _suggest_device_geolocation(form: AppConfigForm) -> None:
+    """Pre-fill the Tronity home geofence with the fixed default location.
 
-    Cached on ``app.state`` after the first success so repeated config-page
-    loads don't re-hit the geolocation service (the device doesn't move). A
-    failed lookup is not cached, so a transient outage retries next load.
-    """
-    cached = getattr(request.app.state, "device_geolocation", None)
-    if cached is not None:
-        return cached  # type: ignore[no-any-return]
-    loc = await detect_device_location()
-    if loc is not None:
-        request.app.state.device_geolocation = loc
-    return loc
-
-
-async def _suggest_device_geolocation(request: Request, form: AppConfigForm) -> None:
-    """Pre-fill the Tronity home geofence from the device's IP location.
-
-    Best-effort and only a *suggestion*: it fires only when the geofence is
-    unset (never overrides saved coordinates), and on the GET render only (not
-    after an explicit save). Because the IP location is coarse, the suggested
-    radius is widened to match. If the lookup fails the fields stay blank.
+    Only a *suggestion*: it fires only when the geofence is unset (never
+    overrides saved coordinates), and on the GET render only (not after an
+    explicit save).
     """
     if form.get("tronity.home_latitude") or form.get("tronity.home_longitude"):
         return
-    loc = await _device_geolocation(request)
-    if loc is None:
-        return
-    lat, lon = loc
-    form["tronity.home_latitude"] = f"{lat:.6f}"
-    form["tronity.home_longitude"] = f"{lon:.6f}"
-    if form.get("tronity.geofence_radius_m", "") in ("", "200", "200.0"):
-        form["tronity.geofence_radius_m"] = _IP_GEOFENCE_RADIUS_M
+    form["tronity.home_latitude"] = f"{_DEFAULT_HOME_LAT:.6f}"
+    form["tronity.home_longitude"] = f"{_DEFAULT_HOME_LON:.6f}"
 
 
 @router.post(

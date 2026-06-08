@@ -22,6 +22,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, model_validator
@@ -64,6 +65,8 @@ SolarCacheDep = Annotated[SolarCache, Depends(get_solar_cache)]
 EtrelClientDep = Annotated[EtrelInchClient | None, Depends(get_etrel_client)]
 ChargerStatusDep = Annotated[dict[str, Any] | None, Depends(get_charger_status)]
 VehicleCacheDep = Annotated[VehicleCache, Depends(get_vehicle_cache)]
+
+logger = structlog.stdlib.get_logger(__name__)
 
 router = APIRouter(prefix="/api")
 
@@ -124,6 +127,20 @@ class ChargerModeRequest(BaseModel):
         if self.mode is ChargerMode.FORCED and self.amps is None:
             raise ValueError("amps is required when mode is 'forced'")
         return self
+
+
+class WebClientLocationRequest(BaseModel):
+    """Browser-reported GPS of the device viewing the dashboard (e.g. the iPad).
+
+    The browser reads this via the Geolocation API and POSTs it purely so it
+    lands in the logs next to the car's Tronity position — a diagnostic to
+    compare where the dashboard is being viewed from against where Tronity
+    places the car. ``accuracy_m`` is the browser's own confidence radius.
+    """
+
+    latitude: float = Field(..., ge=-90.0, le=90.0)
+    longitude: float = Field(..., ge=-180.0, le=180.0)
+    accuracy_m: float | None = Field(default=None, ge=0.0)
 
 
 # ----- serializers -------------------------------------------------------------
@@ -657,6 +674,30 @@ async def post_override(body: OverrideRequest, controller: OverrideDep) -> dict[
         )
     controller.set(mode=body.mode, minutes=body.minutes)
     return _override_to_dict(controller)
+
+
+@router.post("/web-client/location", dependencies=[Depends(require_same_origin)])
+async def post_web_client_location(
+    body: WebClientLocationRequest, request: Request
+) -> dict[str, Any]:
+    """Log the GPS of the browser/device viewing the dashboard (e.g. the iPad).
+
+    Read client-side via the browser Geolocation API and POSTed here as a
+    log-only diagnostic — it sits in the logs next to the ``tronity last_record
+    position`` line so "where the dashboard is viewed from" can be compared to
+    "where Tronity says the car is". Nothing is persisted. The client IP is
+    logged too; on a LAN that's the device's private address, which identifies
+    the viewer without resolving to coordinates (the GPS does that).
+    """
+    client = request.client
+    logger.info(
+        "web client location",
+        latitude=body.latitude,
+        longitude=body.longitude,
+        accuracy_m=body.accuracy_m,
+        client_ip=client.host if client is not None else None,
+    )
+    return {"ok": True}
 
 
 @router.post("/shutdown", dependencies=[Depends(require_same_origin)])

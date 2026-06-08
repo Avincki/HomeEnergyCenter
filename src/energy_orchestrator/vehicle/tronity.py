@@ -257,6 +257,18 @@ class TronityProvider(VehicleProvider):
                 payload_keys=sorted(payload.keys()),
                 payload=payload,
             )
+        # Surface the raw GPS every poll so it's unambiguous whether Tronity is
+        # actually delivering a position for this vehicle (Mercedes' EV-status
+        # scope often omits it, leaving both None) or the car is genuinely at the
+        # logged coordinates. This is the raw lat/lon as received — not the
+        # derived home/away geofence flag, which can't tell "at home" apart from
+        # "no position reported".
+        logger.info(
+            "tronity last_record position",
+            latitude=record.latitude,
+            longitude=record.longitude,
+            position_reported=record.latitude is not None and record.longitude is not None,
+        )
         return record
 
 

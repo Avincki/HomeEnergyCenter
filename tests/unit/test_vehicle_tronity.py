@@ -121,6 +121,24 @@ async def test_fetch_parses_full_record() -> None:
     assert rec.recorded_at.year == 2026  # 1.78e12 ms -> mid-2026
 
 
+async def test_fetch_parses_record_without_position() -> None:
+    # Mercedes' EV-status scope often omits GPS — the record must still parse,
+    # leaving latitude/longitude as None (the case the position log surfaces).
+    fake = _FakeTronity(
+        record={
+            "level": 81.0,
+            "timestamp": 1_780_000_000_000,
+        }
+    )
+    async with _running(fake) as server:
+        async with TronityProvider(_config(server)) as provider:
+            rec = await provider.fetch_record()
+
+    assert rec.soc_pct == 81.0
+    assert rec.latitude is None
+    assert rec.longitude is None
+
+
 async def test_auth_body_carries_app_grant_and_credentials() -> None:
     fake = _FakeTronity()
     async with _running(fake) as server:

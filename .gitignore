@@ -45,6 +45,10 @@ coverage.xml
 .DS_Store
 Thumbs.db
 
+# Screenshots dropped in the repo root (scratch — never meant to be tracked)
+Screenshot *.png
+Screenshot *.jpg
+
 # Project-local
 *.db
 *.sqlite

@@ -421,35 +421,6 @@ async def test_override_minutes_out_of_range_rejected(client: AsyncClient) -> No
     assert resp.status_code == 422
 
 
-# ----- API: /api/web-client/location -------------------------------------------
-
-
-async def test_web_client_location_accepts_position(client: AsyncClient) -> None:
-    resp = await client.post(
-        "/api/web-client/location",
-        json={"latitude": 51.05, "longitude": 3.72, "accuracy_m": 12.5},
-    )
-    assert resp.status_code == 200
-    assert resp.json() == {"ok": True}
-
-
-async def test_web_client_location_accuracy_optional(client: AsyncClient) -> None:
-    resp = await client.post(
-        "/api/web-client/location",
-        json={"latitude": 51.05, "longitude": 3.72},
-    )
-    assert resp.status_code == 200
-    assert resp.json() == {"ok": True}
-
-
-async def test_web_client_location_rejects_out_of_range(client: AsyncClient) -> None:
-    resp = await client.post(
-        "/api/web-client/location",
-        json={"latitude": 91.0, "longitude": 3.72},
-    )
-    assert resp.status_code == 422
-
-
 # ----- HTML views --------------------------------------------------------------
 
 

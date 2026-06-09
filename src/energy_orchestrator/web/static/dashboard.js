@@ -1119,6 +1119,35 @@
         return `Tried ${stateTxt} (${target} %) · write failed: ${data.write_error || "unknown"} · ${readbackTxt}${apcTxt}`;
     }
 
+    // Report this browser/device's GPS (e.g. the iPad's) to the service so it
+    // lands in the logs next to the car's Tronity position — handy to compare
+    // where the dashboard is viewed from against where Tronity places the car.
+    // Best-effort: the Geolocation API needs a secure context, so on iOS Safari
+    // it only resolves over HTTPS (or localhost) and always prompts for
+    // permission once. Any failure (no API, denied, insecure context, timeout)
+    // is swallowed — this never blocks the dashboard.
+    function reportWebClientLocation() {
+        if (!navigator.geolocation) return;
+        navigator.geolocation.getCurrentPosition(
+            (pos) => {
+                const c = pos.coords;
+                fetch("/api/web-client/location", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        latitude: c.latitude,
+                        longitude: c.longitude,
+                        accuracy_m: c.accuracy,
+                    }),
+                }).catch((e) => console.warn("web-client location post failed", e));
+            },
+            (err) => console.warn("geolocation unavailable", err && err.message),
+            // Reuse a fix up to 5 min old so a refocus doesn't spin up GPS every
+            // time; high accuracy since the point of it is a precise position.
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 },
+        );
+    }
+
     async function init() {
         installDateAdapter();
         const canvas = document.getElementById("mainChart");
@@ -1127,6 +1156,7 @@
         wireChartNav();
         wireChargerModeControls();
         wireSolarEdgeTestControl();
+        reportWebClientLocation();
 
         const urls = buildChartUrls();
         let prices = [];
@@ -1160,6 +1190,7 @@
                 stopPolling();
             } else {
                 refreshAll();
+                reportWebClientLocation();
                 if (isViewingToday()) startPolling();
             }
         });

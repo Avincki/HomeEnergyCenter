@@ -263,11 +263,17 @@ class TronityProvider(VehicleProvider):
         # logged coordinates. This is the raw lat/lon as received — not the
         # derived home/away geofence flag, which can't tell "at home" apart from
         # "no position reported".
+        #
+        # ``recorded_at`` is the record's own timestamp: if it keeps advancing
+        # while lat/lon stays pinned (e.g. at home), Tronity is echoing a static
+        # position rather than a stale fix; if it's frozen, the whole record is
+        # stale (the car hasn't reported since it was last there).
         logger.info(
             "tronity last_record position",
             latitude=record.latitude,
             longitude=record.longitude,
             position_reported=record.latitude is not None and record.longitude is not None,
+            recorded_at=record.recorded_at,
         )
         return record
 

@@ -55,3 +55,37 @@ def test_points_in_range_filters_inclusively_on_start_exclusively_on_end() -> No
     )
     hours = [p.timestamp.hour for p in subset]
     assert hours == [1, 2]
+
+
+# ----- eager tomorrow-price retry backoff -------------------------------------
+
+
+def test_tomorrow_retry_allowed_when_never_marked() -> None:
+    cache = PriceCache()
+    assert cache.tomorrow_retry_allowed(datetime(2026, 5, 1, 14, 0, tzinfo=UTC)) is True
+
+
+def test_mark_tomorrow_missing_backs_off_10min() -> None:
+    cache = PriceCache()
+    t0 = datetime(2026, 5, 1, 14, 0, tzinfo=UTC)
+    cache.mark_tomorrow_missing(t0)
+    assert cache.tomorrow_retry_allowed(t0) is False
+    assert cache.tomorrow_retry_allowed(t0 + timedelta(minutes=9)) is False
+    assert cache.tomorrow_retry_allowed(t0 + timedelta(minutes=10)) is True
+
+
+def test_replace_clears_tomorrow_retry() -> None:
+    cache = PriceCache()
+    t0 = datetime(2026, 5, 1, 14, 0, tzinfo=UTC)
+    cache.mark_tomorrow_missing(t0)
+    # A successful refresh (even one min later) resets the backoff.
+    cache.replace([_pp(15)], t0 + timedelta(minutes=1))
+    assert cache.tomorrow_retry_allowed(t0 + timedelta(minutes=1)) is True
+
+
+def test_invalidate_clears_tomorrow_retry() -> None:
+    cache = PriceCache()
+    t0 = datetime(2026, 5, 1, 14, 0, tzinfo=UTC)
+    cache.mark_tomorrow_missing(t0)
+    cache.invalidate()
+    assert cache.tomorrow_retry_allowed(t0) is True

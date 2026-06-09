@@ -23,7 +23,7 @@
  * The live data API is never cached — it must always reach the server.
  */
 
-const CACHE = "eo-shell-v4";
+const CACHE = "eo-shell-v5";
 const PRECACHE = [
     "/",
     "/static/style.css",

@@ -130,6 +130,13 @@ _CHARGER_FORCED_MAX_A = 16.0
 _PRICE_PAST_DAYS = timedelta(days=1)
 _PRICE_FUTURE_DAYS = timedelta(days=2)
 
+# Local (Brussels) hour from which we eagerly chase *tomorrow's* day-ahead
+# prices if the cache doesn't have them yet. The SDAC day-ahead auction
+# publishes ~12:57 CET; +1 h gives a safe buffer for late/decoupling days
+# while still surfacing tomorrow's prices (and the dashboard's next-day view)
+# early in the afternoon rather than waiting out the hourly refresh.
+_TOMORROW_PUBLISH_HOUR_LOCAL = 14
+
 # Daily cadence for history pruning. Without this, readings/decisions accrue
 # forever — the repositories all expose ``prune()`` but nothing was calling
 # them, so ``storage.history_retention_days`` was effectively ignored.
@@ -512,8 +519,43 @@ class TickLoop:
         await self._record_status_success(client.source_name, payload)
         return reading
 
+    def _tomorrow_window_utc(self, now: datetime) -> tuple[datetime, datetime]:
+        """UTC half-open ``[start, end)`` bounds of tomorrow as a *Brussels*
+        civil day.
+
+        Built from Brussels wall time (not ``now.replace(hour=0)+1d``) so it
+        stays correct across the DST transitions, where the local day is 23 h
+        or 25 h long and "tomorrow 00:00 local" doesn't sit on a fixed UTC hour.
+        """
+        local = to_local(now)
+        start_local = (local + timedelta(days=1)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        end_local = (local + timedelta(days=2)).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return start_local.astimezone(UTC), end_local.astimezone(UTC)
+
+    def _wants_tomorrow_prices(self, now: datetime) -> bool:
+        """Whether to eagerly refetch to pull tomorrow's day-ahead prices.
+
+        True once we're past the publication buffer (``_TOMORROW_PUBLISH_HOUR_LOCAL``
+        Brussels) but the cache still has no points for tomorrow — and the
+        ``_TOMORROW_RETRY`` backoff has elapsed. This nudges a prompt fetch so
+        tomorrow's prices (and the dashboard's next-day view) appear in the
+        early afternoon instead of waiting out the hourly ``is_stale`` cycle,
+        and keeps retrying if the day-ahead auction published late.
+        """
+        if to_local(now).hour < _TOMORROW_PUBLISH_HOUR_LOCAL:
+            return False
+        start, end = self._tomorrow_window_utc(now)
+        if self._price_cache.points_in_range(start, end):
+            return False
+        return self._price_cache.tomorrow_retry_allowed(now)
+
     async def _refresh_prices_if_stale(self, now: datetime) -> None:
-        if not self._price_cache.is_stale(now):
+        wants_tomorrow = self._wants_tomorrow_prices(now)
+        if not self._price_cache.is_stale(now) and not wants_tomorrow:
             return
         today_utc_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
         start = today_utc_midnight - _PRICE_PAST_DAYS
@@ -529,6 +571,14 @@ class TickLoop:
             return
         self._price_cache.replace(points, now)
         await self._persist_prices(points)
+        # If we're past the publication buffer but the fetch still didn't bring
+        # tomorrow's prices (auction published late, or a transient empty
+        # response), back off so the eager path retries on the _TOMORROW_RETRY
+        # cadence rather than every poll. replace() cleared any prior backoff.
+        if to_local(now).hour >= _TOMORROW_PUBLISH_HOUR_LOCAL:
+            tmrw_start, tmrw_end = self._tomorrow_window_utc(now)
+            if not self._price_cache.points_in_range(tmrw_start, tmrw_end):
+                self._price_cache.mark_tomorrow_missing(now)
         await self._record_status_success(SourceName.PRICES, {"hours": len(points)})
 
     async def _refresh_solar_if_stale(self, now: datetime) -> None:

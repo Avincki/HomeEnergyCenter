@@ -56,6 +56,13 @@
     // Polling timer handle so the nav code can pause refreshes when looking
     // at a non-today day (the data is frozen there).
     let pollTimer = null;
+    // True once tomorrow's day-ahead prices are present in the live cache
+    // window — gates whether the Next button can advance to tomorrow (a
+    // price-only preview used for night-charging planning). Recomputed only
+    // on the today view (the no-date /api/prices returns the full
+    // yesterday+today+tomorrow window); left untouched while browsing other
+    // days, whose ?date= payload is clipped to that day.
+    let tomorrowAvailable = false;
 
     function startOfLocalDay(d) {
         const out = new Date(d);
@@ -71,6 +78,36 @@
 
     function isViewingToday() {
         return viewedDate.getTime() === startOfLocalDay(new Date()).getTime();
+    }
+
+    // Furthest day the chart may navigate to: today normally, or tomorrow once
+    // tomorrow's day-ahead prices have loaded. Day-ahead never reaches beyond
+    // tomorrow, so this is the hard ceiling for the Next button.
+    function maxNavigableDay() {
+        const d = startOfLocalDay(new Date());
+        if (tomorrowAvailable) d.setDate(d.getDate() + 1);
+        return d;
+    }
+
+    function canGoNext() {
+        return viewedDate.getTime() < maxNavigableDay().getTime();
+    }
+
+    // Whether the given price rows contain any point falling on tomorrow's
+    // local day — i.e. tomorrow's day-ahead prices have been published and
+    // pulled into the live cache window.
+    function pricesCoverTomorrow(prices) {
+        if (!prices || !prices.length) return false;
+        const tomorrow = startOfLocalDay(new Date());
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const dayAfter = new Date(tomorrow);
+        dayAfter.setDate(dayAfter.getDate() + 1);
+        const lo = tomorrow.getTime();
+        const hi = dayAfter.getTime();
+        return prices.some((p) => {
+            const t = new Date(p.timestamp).getTime();
+            return t >= lo && t < hi;
+        });
     }
 
     function dateQuery() {
@@ -821,6 +858,14 @@
             applyCurrentHourPrice(priceJson.prices || []);
             updateChart(priceJson.prices || [], history.readings || [],
                         (solarJson && solarJson.points) || []);
+            // Only the today view's /api/prices returns the full window that
+            // includes tomorrow; recompute availability there and refresh the
+            // Next button so a freshly-published tomorrow unlocks it without a
+            // manual nav action.
+            if (isViewingToday()) {
+                tomorrowAvailable = pricesCoverTomorrow(priceJson.prices || []);
+                applyNavUi();
+            }
             const status = document.getElementById("dashboard-refresh-status");
             if (status) {
                 if (isViewingToday()) {
@@ -917,10 +962,10 @@
         if (dateEl) dateEl.textContent = fmtDateYMD(viewedDate);
         const nextBtn = document.getElementById("chart-next");
         if (nextBtn) {
-            // Past today there's no recorded data — disable the Next button
-            // so users don't navigate into an empty future. They can still
-            // jump back via Today / Prev.
-            nextBtn.disabled = isViewingToday();
+            // Enabled up to maxNavigableDay() — today, or tomorrow once its
+            // day-ahead prices have loaded. Beyond that there's no data, so the
+            // button is disabled rather than navigating into an empty future.
+            nextBtn.disabled = !canGoNext();
         }
         const todayBtn = document.getElementById("chart-today");
         if (todayBtn) todayBtn.disabled = isViewingToday();
@@ -958,10 +1003,10 @@
         if (next) next.addEventListener("click", () => {
             const d = new Date(viewedDate);
             d.setDate(d.getDate() + 1);
-            // Cap at today — the disabled-when-today check on the button is
-            // belt-and-braces; this is the actual guard.
-            const startOfToday = startOfLocalDay(new Date());
-            if (d.getTime() > startOfToday.getTime()) return;
+            // Cap at maxNavigableDay() (today, or tomorrow once its prices are
+            // in) — the disabled-state check on the button is belt-and-braces;
+            // this is the actual guard.
+            if (d.getTime() > maxNavigableDay().getTime()) return;
             navigateTo(d);
         });
         applyNavUi();

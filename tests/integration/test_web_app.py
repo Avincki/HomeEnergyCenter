@@ -508,6 +508,47 @@ async def test_prices_endpoint_returns_cached_points_after_replace(client: Async
     assert body["prices"][1]["injection_eur_per_kwh"] == -0.01
 
 
+async def test_prices_endpoint_window_includes_tomorrow(client: AsyncClient) -> None:
+    """The today-view /api/prices window exposes tomorrow's points — the signal
+    the dashboard scans to decide whether the Next button can reach tomorrow."""
+    cache = client._transport.app.state.price_cache  # type: ignore[attr-defined]
+    now = datetime.now(UTC).replace(minute=0, second=0, microsecond=0)
+    tomorrow = now + timedelta(days=1)
+    cache.replace(
+        [
+            PricePoint(timestamp=now, consumption_eur_per_kwh=0.20, injection_eur_per_kwh=0.05),
+            PricePoint(
+                timestamp=tomorrow, consumption_eur_per_kwh=0.18, injection_eur_per_kwh=0.04
+            ),
+        ],
+        now,
+    )
+
+    resp = await client.get("/api/prices")
+    body = resp.json()
+    returned = [datetime.fromisoformat(p["timestamp"]) for p in body["prices"]]
+    assert any(r.date() == tomorrow.date() for r in returned)
+
+
+async def test_prices_endpoint_date_param_reads_persisted_rows(client: AsyncClient) -> None:
+    """The ?date= path serves persisted price_points — the route the dashboard
+    uses to render tomorrow once the tick loop has persisted it."""
+    factory = client._transport.app.state.session_factory  # type: ignore[attr-defined]
+    now = datetime.now(UTC)
+    ts = (now + timedelta(days=1)).replace(hour=12, minute=0, second=0, microsecond=0)
+    async with UnitOfWork(factory) as uow:
+        await uow.price_points.upsert_many([(ts, 0.19, 0.03)])
+        await uow.commit()
+
+    date_str = ts.date().isoformat()
+    resp = await client.get(f"/api/prices?date={date_str}")
+    body = resp.json()
+    assert body["date"] == date_str
+    assert body["last_refresh"] is None
+    returned = [datetime.fromisoformat(p["timestamp"]) for p in body["prices"]]
+    assert any(r.date() == ts.date() and r.hour == 12 for r in returned)
+
+
 async def test_openapi_includes_all_endpoints(client: AsyncClient) -> None:
     resp = await client.get("/openapi.json")
     paths = resp.json()["paths"]

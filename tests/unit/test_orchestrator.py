@@ -233,6 +233,26 @@ def _hour_price(when: datetime, *, injection: float, consumption: float = 0.20) 
     )
 
 
+def _loop_with_price_provider(
+    config: AppConfig,
+    session_factory: async_sessionmaker[AsyncSession],
+    cache: PriceCache,
+    provider: FakeProvider,
+) -> TickLoop:
+    """A TickLoop wired with the standard idle fakes and a given price provider/cache."""
+    loop = TickLoop(config, session_factory, OverrideController(), cache, SolarCache())
+    _install_fakes(
+        loop,
+        sonnen=FakeClient(SourceName.SONNEN, data={"soc_pct": 75.0}),
+        car=FakeClient(SourceName.CAR_CHARGER, data={"active_power_w": 0.0}),
+        p1=FakeClient(SourceName.P1_METER, data={"active_power_w": 0.0}),
+        small=FakeClient(SourceName.SMALL_SOLAR, data={"active_power_w": 0.0}),
+        solaredge=FakeSolarEdge(),
+        provider=provider,
+    )
+    return loop
+
+
 # ----- tests ------------------------------------------------------------------
 
 
@@ -826,6 +846,97 @@ async def test_tick_refreshes_price_cache_when_stale(
     # Same tick again at the same instant — cache is fresh, no second fetch.
     await loop.tick(now=now)
     assert provider.fetch_calls == 1
+
+
+# ----- eager tomorrow-price fetch ---------------------------------------------
+# 2026-05-01 is CEST (UTC+2), so 14:00 Brussels == 12:00 UTC and tomorrow's
+# Brussels civil day maps to [2026-05-01 22:00 UTC, 2026-05-02 22:00 UTC).
+
+
+async def test_tick_fetches_tomorrow_after_publish_hour_when_missing(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    config = _config(tmp_path)
+    cache = PriceCache()
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)  # 14:00 Brussels
+    # Seed a fresh (non-stale) cache that holds only today's price — so the only
+    # thing that can drive a fetch is the eager tomorrow path.
+    cache.replace([_hour_price(now, injection=0.05)], now)
+    provider = FakeProvider(
+        [_hour_price(now, injection=0.05), _hour_price(now + timedelta(days=1), injection=0.06)]
+    )
+    loop = _loop_with_price_provider(config, session_factory, cache, provider)
+
+    assert not cache.is_stale(now)  # guard: fetch is not stale-driven
+    await loop.tick(now=now)
+
+    assert provider.fetch_calls == 1
+    tmrw_start, tmrw_end = loop._tomorrow_window_utc(now)
+    assert cache.points_in_range(tmrw_start, tmrw_end)  # tomorrow now present
+
+
+async def test_tick_does_not_fetch_tomorrow_before_publish_hour(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    config = _config(tmp_path)
+    cache = PriceCache()
+    now = datetime(2026, 5, 1, 8, 0, tzinfo=UTC)  # 10:00 Brussels — before buffer
+    cache.replace([_hour_price(now, injection=0.05)], now)
+    provider = FakeProvider([_hour_price(now, injection=0.05)])
+    loop = _loop_with_price_provider(config, session_factory, cache, provider)
+
+    assert not cache.is_stale(now)
+    await loop.tick(now=now)
+
+    assert provider.fetch_calls == 0  # too early to chase tomorrow
+
+
+async def test_tick_does_not_refetch_when_tomorrow_already_present(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    config = _config(tmp_path)
+    cache = PriceCache()
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)  # 14:00 Brussels
+    cache.replace(
+        [_hour_price(now, injection=0.05), _hour_price(now + timedelta(days=1), injection=0.06)],
+        now,
+    )
+    provider = FakeProvider([_hour_price(now, injection=0.05)])
+    loop = _loop_with_price_provider(config, session_factory, cache, provider)
+
+    assert not cache.is_stale(now)
+    await loop.tick(now=now)
+
+    assert provider.fetch_calls == 0  # already have tomorrow — nothing to chase
+
+
+async def test_tick_backs_off_when_tomorrow_still_absent_after_fetch(
+    tmp_path: Path,
+    session_factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """A late day-ahead publication: the provider keeps returning today-only.
+    The eager path fires once, then backs off ~10 min instead of every poll."""
+    config = _config(tmp_path)
+    cache = PriceCache()
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)  # 14:00 Brussels
+    cache.replace([_hour_price(now, injection=0.05)], now)
+    # Provider never returns tomorrow — simulates pre-publication.
+    provider = FakeProvider([_hour_price(now, injection=0.05)])
+    loop = _loop_with_price_provider(config, session_factory, cache, provider)
+
+    await loop.tick(now=now)
+    assert provider.fetch_calls == 1  # eager fetch fired
+
+    # 1 min later: still missing, but inside the backoff window — no refetch.
+    await loop.tick(now=now + timedelta(minutes=1))
+    assert provider.fetch_calls == 1
+
+    # 10 min later: backoff elapsed — retry.
+    await loop.tick(now=now + timedelta(minutes=10))
+    assert provider.fetch_calls == 2
 
 
 async def test_tick_records_price_fetch_error(

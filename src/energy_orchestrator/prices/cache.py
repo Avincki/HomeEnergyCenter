@@ -17,6 +17,11 @@ from energy_orchestrator.prices.base import PricePoint
 # running a CSV provider whose file got hand-edited; an hourly re-pull
 # guarantees those edits land within the hour without complicating the API.
 _MAX_AGE = timedelta(hours=1)
+# Backoff between eager attempts to pull *tomorrow's* day-ahead prices once the
+# orchestrator decides they're due (past the publication buffer). ENTSO-E can
+# publish late on decoupling days, so we keep retrying — but only every few
+# minutes, not every poll, to avoid hammering the API while we wait.
+_TOMORROW_RETRY = timedelta(minutes=10)
 
 
 class PriceCache:
@@ -25,6 +30,11 @@ class PriceCache:
     def __init__(self) -> None:
         self._points: tuple[PricePoint, ...] = ()
         self._last_refresh: datetime | None = None
+        # Earliest time the eager "fetch tomorrow's prices" path may retry after
+        # a fetch that came back without tomorrow's data. ``None`` means no
+        # backoff active. Cleared on a successful ``replace`` (whatever it
+        # contained) and on ``invalidate``; bumped by ``mark_tomorrow_missing``.
+        self._next_day_retry_at: datetime | None = None
 
     def points(self) -> tuple[PricePoint, ...]:
         return self._points
@@ -50,6 +60,10 @@ class PriceCache:
     def replace(self, points: Iterable[PricePoint], now: datetime) -> None:
         self._points = tuple(sorted(points, key=lambda p: p.timestamp))
         self._last_refresh = now
+        # A successful refresh resets the eager-tomorrow backoff: if tomorrow's
+        # prices landed the orchestrator stops asking; if they didn't, it
+        # re-arms the backoff explicitly via mark_tomorrow_missing.
+        self._next_day_retry_at = None
 
     def invalidate(self) -> None:
         """Force the next ``is_stale`` check to return True (refetch next tick).
@@ -59,6 +73,20 @@ class PriceCache:
         waiting out the normal refresh window.
         """
         self._last_refresh = None
+        self._next_day_retry_at = None
+
+    def mark_tomorrow_missing(self, now: datetime) -> None:
+        """Record that a fetch did not return tomorrow's prices yet.
+
+        Backs off the eager-tomorrow path so the tick loop retries every
+        ``_TOMORROW_RETRY`` rather than every poll while waiting for a late
+        day-ahead publication. Does not touch the cached points.
+        """
+        self._next_day_retry_at = now + _TOMORROW_RETRY
+
+    def tomorrow_retry_allowed(self, now: datetime) -> bool:
+        """Whether the eager-tomorrow fetch may run now (backoff elapsed)."""
+        return self._next_day_retry_at is None or now >= self._next_day_retry_at
 
     def points_in_range(self, start: datetime, end: datetime) -> Sequence[PricePoint]:
         """Subset of cached points whose timestamp lies in ``[start, end)``."""

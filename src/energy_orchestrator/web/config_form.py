@@ -295,6 +295,23 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                         "charger_control.step_a",
                         hint="±adjustment per decision tick",
                     ),
+                    WebField(
+                        "Night charging (fixed current after sunset)",
+                        "charger_control.night_charge_enabled",
+                        "checkbox",
+                        hint="drain the home battery into the car after sunset; "
+                        "pauses instead of importing from the grid",
+                    ),
+                    WebField(
+                        "Night charge current (A)",
+                        "charger_control.night_charge_a",
+                        hint="fixed setpoint after sunset (6-16, within min/max)",
+                    ),
+                    WebField(
+                        "Night battery floor (%)",
+                        "charger_control.night_floor_soc_pct",
+                        hint="stop the night charge when the home battery drains to this SoC",
+                    ),
                 ),
             ),
         ),

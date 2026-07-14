@@ -7,7 +7,8 @@ accumulator). It is deliberately kept separate from the inverter rule chain
 rather than bolted onto ``DecisionState`` (ON/OFF), which cannot express a
 continuous charge current.
 
-Strategy (solar daytime only — night rules are a later phase):
+Strategy (solar daytime; a separate fixed-current night mode is described at
+the end):
 
 * Below ``battery_floor_soc_pct`` the home battery has priority — don't charge.
 * Above it, follow available power. The available-power signal is the measured
@@ -40,6 +41,18 @@ actually drawing near the commanded current — otherwise an unplugged / full /
 externally-clamped car would wind the accumulator to the ceiling and then dump
 full current the moment it could draw.
 
+Night mode (``night_charge_enabled``): after sunset the car charges at a fixed
+``night_charge_a`` fed from the home battery, down to ``night_floor_soc_pct``
+(a deliberately lower floor than the daytime charge-stop — the bet is that
+tomorrow's solar refills the battery). There is no surplus to follow at night,
+so the envelope is binary {0, night_charge_a} and the guard is *measured* grid
+import: importing past ``import_threshold_w`` pauses the charge instead of
+buying power. Resuming needs the battery to have headroom for house + car
+(estimated from its discharge while the car is idle) AND a cooldown after an
+import-pause — both matter because the EQS latches an AC-charging fault when
+the offer rapid-cycles, so a mis-tuned ``battery_max_output_w`` must degrade
+to a slow retry, never a per-tick flap.
+
 Every threshold here is a config knob (``ChargerControlConfig``) — they are
 expected to be tuned empirically during the live-test window, not in code.
 """
@@ -47,7 +60,7 @@ expected to be tuned empirically during the live-test window, not in code.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 import structlog
@@ -94,6 +107,17 @@ ATTACHED_CHARGEABLE_STATUS: frozenset[int] = frozenset({1, 2, 3, 4, 5, 6})
 # the few-second pilot ramp after a step, narrow enough to catch a car that
 # isn't drawing at all.
 _DRAW_TRACKING_TOLERANCE_A = 2.0
+
+# Per-amp draw of a 3-phase charge (3 x 230 V) — used at night to estimate the
+# car's draw before offering it, since there is no surplus signal to lean on.
+_W_PER_AMP_3PHASE = 690.0
+
+# After a night charge is paused for grid import, don't retry before this has
+# elapsed. The headroom estimate below is the primary anti-flap gate; this
+# cooldown is the backstop for a mis-tuned battery_max_output_w, bounding the
+# worst case to ~2 offer-cycles/hour (the EQS latches an AC fault when the
+# offer rapid-cycles).
+_NIGHT_IMPORT_RETRY = timedelta(minutes=30)
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -165,6 +189,12 @@ class ChargerController:
         # Hysteresis latch for the battery-SoC floor: once disabled by a low
         # SoC we only re-enable above floor + hysteresis, and vice-versa.
         self._soc_enabled: bool = False
+        # Night-mode state: its own SoC latch (the night floor is lower than
+        # the daytime one) and the earliest instant a night charge may resume
+        # after an import-pause. Stale values are harmless across day/night
+        # transitions — both are only read inside the night branch.
+        self._night_soc_enabled: bool = False
+        self._night_resume_at: datetime | None = None
 
     @property
     def target_a(self) -> float:
@@ -189,7 +219,7 @@ class ChargerController:
 
         # ----- eligibility gates: any failure parks the car (reset to 0) -----
         if not inp.is_daytime:
-            return self._pause("outside solar daytime (no night rules yet)")
+            return self._night_decide(inp)
         if not inp.car_attached:
             return self._pause("no chargeable car attached")
         if not self._soc_floor_ok(inp.battery_soc_pct):
@@ -321,3 +351,94 @@ class ChargerController:
         if actual_a is None:
             return True
         return actual_a >= self._target_a - _DRAW_TRACKING_TOLERANCE_A
+
+    # ----- night mode ---------------------------------------------------------
+
+    def _night_decide(self, inp: ChargerInputs) -> ChargerCommand:
+        """Fixed-current battery-drain charge after sunset.
+
+        Binary envelope {0, night_charge_a}: there is no surplus to follow, so
+        the only in-charge guard is measured grid import (pause, never buy).
+        Resume needs battery headroom for house + car plus the import-pause
+        cooldown — see the module docstring for why both.
+        """
+        cfg = self.config
+        if not cfg.night_charge_enabled:
+            return self._pause("outside solar daytime (night charging disabled)")
+        if not inp.car_attached:
+            return self._pause("no chargeable car attached")
+        if not self._night_soc_floor_ok(inp.battery_soc_pct):
+            return self._pause(
+                f"night: battery SoC {inp.battery_soc_pct:.0f}% at floor "
+                f"{cfg.night_floor_soc_pct:.0f}% — done for tonight"
+            )
+
+        import_w = max(0.0, inp.grid_power_w)
+        night_a = _clamp(cfg.night_charge_a, cfg.min_charge_a, cfg.max_charge_a)
+        if self._target_a >= cfg.min_charge_a:
+            return self._night_hold(inp, import_w, night_a)
+        return self._night_maybe_start(inp, import_w, night_a)
+
+    def _night_hold(self, inp: ChargerInputs, import_w: float, night_a: float) -> ChargerCommand:
+        """Charging (or handing over from a daytime ramp at sunset — the target
+        just steps to night_charge_a, no pause cycle in between)."""
+        cfg = self.config
+        if import_w > cfg.import_threshold_w:
+            self._night_resume_at = inp.timestamp + _NIGHT_IMPORT_RETRY
+            return self._pause(
+                f"night: importing {import_w:.0f} W > "
+                f"{cfg.import_threshold_w:.0f} W — pause instead of buying"
+            )
+        self._target_a = night_a
+        return ChargerCommand(
+            night_a, False, f"night: hold {night_a:.0f} A (import {import_w:.0f} W)"
+        )
+
+    def _night_maybe_start(
+        self, inp: ChargerInputs, import_w: float, night_a: float
+    ) -> ChargerCommand:
+        cfg = self.config
+        if self._night_resume_at is not None and inp.timestamp < self._night_resume_at:
+            return ChargerCommand(
+                0.0,
+                True,
+                "night: cooling down after import-pause "
+                f"(retry from {self._night_resume_at:%H:%M} UTC)",
+            )
+        if import_w > cfg.import_threshold_w:
+            return ChargerCommand(
+                0.0, True, f"night: already importing {import_w:.0f} W — won't add the car"
+            )
+        # With the car idle, house load ~= battery discharge + import (no solar
+        # at night). Offer the charge only if the battery could carry both.
+        house_w = max(0.0, inp.battery_power_w) + import_w
+        draw_w = night_a * _W_PER_AMP_3PHASE
+        if house_w + draw_w > cfg.battery_max_output_w:
+            return ChargerCommand(
+                0.0,
+                True,
+                f"night: house {house_w:.0f} W + car {draw_w:.0f} W would exceed "
+                f"battery max {cfg.battery_max_output_w:.0f} W",
+            )
+        self._night_resume_at = None
+        self._target_a = night_a
+        return ChargerCommand(
+            night_a,
+            False,
+            f"night: start {night_a:.0f} A from battery "
+            f"(SoC {inp.battery_soc_pct:.0f}% > floor {cfg.night_floor_soc_pct:.0f}%)",
+        )
+
+    def _night_soc_floor_ok(self, soc_pct: float) -> bool:
+        # Same latch shape as the daytime floor, against the (lower) night
+        # floor. At night the SoC only falls, so once the floor trips the
+        # charge stays off until morning; the hysteresis matters only for
+        # measurement jitter right at the boundary.
+        cfg = self.config
+        if self._night_soc_enabled:
+            self._night_soc_enabled = soc_pct > cfg.night_floor_soc_pct
+        else:
+            self._night_soc_enabled = (
+                soc_pct > cfg.night_floor_soc_pct + cfg.battery_floor_hysteresis_pct
+            )
+        return self._night_soc_enabled

@@ -291,7 +291,8 @@ class DecisionConfig(_StrictModel):
 
 
 class ChargerControlConfig(_StrictModel):
-    """Rule-based control of the Etrel EV charger during solar daytime.
+    """Rule-based control of the Etrel EV charger: surplus-following during
+    solar daytime, plus an optional fixed-current battery-drain mode at night.
 
     Every threshold is a tuning knob — expected to be adjusted empirically
     during the live-test window, not in code. See ``decision/charger_control.py``
@@ -344,10 +345,23 @@ class ChargerControlConfig(_StrictModel):
     max_charge_a: float = Field(default=16.0, gt=0.0, le=16.0)
     step_a: float = Field(default=1.0, gt=0.0, le=16.0)
 
+    # Night charging: after sunset, hold a fixed current fed from the home
+    # battery until its SoC drains to night_floor_soc_pct, pausing instead of
+    # importing (import_threshold_w is the trigger; resume needs battery
+    # headroom for house + car and a cooldown, so the AC offer is never
+    # rapid-cycled).  [TUNABLE]
+    night_charge_enabled: bool = False
+    night_charge_a: float = Field(default=6.0, ge=6.0, le=16.0)
+    night_floor_soc_pct: Percent = 20.0
+
     @model_validator(mode="after")
     def _envelope_consistent(self) -> ChargerControlConfig:
         if self.min_charge_a > self.max_charge_a:
             raise ValueError("charger_control.min_charge_a must be <= max_charge_a")
+        if not (self.min_charge_a <= self.night_charge_a <= self.max_charge_a):
+            raise ValueError(
+                "charger_control.night_charge_a must be within [min_charge_a, max_charge_a]"
+            )
         return self
 
 

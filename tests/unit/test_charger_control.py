@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from energy_orchestrator.config.models import ChargerControlConfig
 from energy_orchestrator.decision.charger_control import (
@@ -263,6 +265,120 @@ def test_charging_battery_still_taps_taper_reserve() -> None:
         )
     )
     assert not cmd.paused and cmd.target_a == 7.0
+
+
+# ----- night mode ---------------------------------------------------------------
+
+_NIGHT_TS = datetime(2026, 5, 22, 22, 0, tzinfo=UTC)
+
+
+def _night_config(**overrides: object) -> ChargerControlConfig:
+    return _config(night_charge_enabled=True, **overrides)
+
+
+def _night_inputs(**overrides: object) -> ChargerInputs:
+    base: dict[str, object] = {
+        "timestamp": _NIGHT_TS,
+        "is_daytime": False,
+        # Typical quiet evening: battery covering a ~400 W house load.
+        "grid_power_w": 0.0,
+        "battery_power_w": 400.0,
+    }
+    base.update(overrides)
+    return _inputs(**base)
+
+
+def test_night_disabled_still_pauses_outside_daytime() -> None:
+    ctrl = ChargerController(_config())  # night_charge_enabled defaults False
+    cmd = ctrl.decide(_night_inputs())
+    assert cmd.paused and cmd.target_a == 0.0
+
+
+def test_night_starts_fixed_current_from_battery() -> None:
+    ctrl = ChargerController(_night_config())
+    cmd = ctrl.decide(_night_inputs(battery_soc_pct=80.0))
+    assert not cmd.paused and cmd.target_a == 6.0
+
+
+def test_night_holds_fixed_current_no_ramp() -> None:
+    # Unlike daytime, a huge virtual surplus never ramps past night_charge_a.
+    ctrl = ChargerController(_night_config())
+    assert ctrl.decide(_night_inputs(battery_soc_pct=100.0)).target_a == 6.0
+    assert ctrl.decide(_night_inputs(battery_soc_pct=100.0)).target_a == 6.0
+
+
+def test_night_pauses_when_no_car_attached() -> None:
+    ctrl = ChargerController(_night_config())
+    assert ctrl.decide(_night_inputs(car_attached=False)).paused
+
+
+def test_night_stops_at_floor_soc() -> None:
+    ctrl = ChargerController(_night_config())  # night floor 20
+    assert not ctrl.decide(_night_inputs(battery_soc_pct=25.0)).paused
+    cmd = ctrl.decide(_night_inputs(battery_soc_pct=20.0))
+    assert cmd.paused and "floor" in cmd.reason
+
+
+def test_night_floor_hysteresis_blocks_reenable_at_boundary() -> None:
+    ctrl = ChargerController(_night_config())  # floor 20, hyst 3
+    assert not ctrl.decide(_night_inputs(battery_soc_pct=30.0)).paused
+    assert ctrl.decide(_night_inputs(battery_soc_pct=19.0)).paused  # tripped
+    # Jitter back to just above the floor -> still latched off.
+    assert ctrl.decide(_night_inputs(battery_soc_pct=21.0)).paused
+    # Above floor + hysteresis -> re-enabled.
+    assert not ctrl.decide(_night_inputs(battery_soc_pct=24.0)).paused
+
+
+def test_night_import_pauses_instead_of_buying() -> None:
+    ctrl = ChargerController(_night_config())
+    assert not ctrl.decide(_night_inputs(battery_soc_pct=80.0)).paused  # charging
+    cmd = ctrl.decide(_night_inputs(battery_soc_pct=80.0, grid_power_w=600.0))
+    assert cmd.paused and "import" in cmd.reason
+
+
+def test_night_import_pause_has_resume_cooldown() -> None:
+    ctrl = ChargerController(_night_config())
+    assert not ctrl.decide(_night_inputs(battery_soc_pct=80.0)).paused
+    assert ctrl.decide(_night_inputs(battery_soc_pct=80.0, grid_power_w=600.0)).paused
+    # Import gone one tick later -> still paused (cooldown), no per-tick flap.
+    early = ctrl.decide(_night_inputs(timestamp=_NIGHT_TS + timedelta(minutes=1)))
+    assert early.paused and "cooling down" in early.reason
+    # After the cooldown the charge resumes.
+    late = ctrl.decide(
+        _night_inputs(timestamp=_NIGHT_TS + timedelta(minutes=31), battery_soc_pct=80.0)
+    )
+    assert not late.paused and late.target_a == 6.0
+
+
+def test_night_start_blocked_without_battery_headroom() -> None:
+    # House load (battery discharge while the car is idle) + the ~4.1 kW car
+    # draw would exceed battery_max_output_w -> don't offer the charge.
+    ctrl = ChargerController(_night_config(battery_max_output_w=4600.0))
+    cmd = ctrl.decide(_night_inputs(battery_soc_pct=80.0, battery_power_w=800.0))
+    assert cmd.paused and "exceed" in cmd.reason
+    # A quieter house fits: 300 + 4140 < 4600.
+    cmd = ctrl.decide(_night_inputs(battery_soc_pct=80.0, battery_power_w=300.0))
+    assert not cmd.paused
+
+
+def test_night_start_blocked_while_already_importing() -> None:
+    ctrl = ChargerController(_night_config())
+    cmd = ctrl.decide(_night_inputs(battery_soc_pct=80.0, grid_power_w=700.0))
+    assert cmd.paused and "importing" in cmd.reason
+
+
+def test_sunset_handover_steps_daytime_target_to_night_current() -> None:
+    # Mid-session at 10 A when the sun sets: the target steps straight to the
+    # night current with no pause in between (no AC offer cycle for the EQS).
+    ctrl = ChargerController(_night_config())
+    ctrl._target_a = 10.0
+    cmd = ctrl.decide(_night_inputs(battery_soc_pct=80.0))
+    assert not cmd.paused and cmd.target_a == 6.0
+
+
+def test_night_charge_a_must_fit_envelope() -> None:
+    with pytest.raises(ValueError, match="night_charge_a"):
+        _config(night_charge_a=8.0, max_charge_a=7.0)
 
 
 # ----- daytime helper ----------------------------------------------------------

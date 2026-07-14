@@ -74,7 +74,7 @@ decision:
   forecast_horizon_h: 12
   dry_run: true          # actuator writes are suppressed while true
 
-# charger_control:                # rule-based Etrel EV-charger control, solar daytime only
+# charger_control:                # rule-based Etrel EV-charger control (daytime surplus + optional night mode)
 #   enabled: false                # master switch (needs the etrel + solar sections to actually run)
 #   dry_run: true                 # compute + log decisions, but don't write to the charger
 #   battery_floor_soc_pct: 30     # charge-stop gate: below this the home battery has priority
@@ -88,6 +88,9 @@ decision:
 #   min_charge_a: 6               # below this the charger pauses
 #   max_charge_a: 16              # installation hard cap (<= 16 A)
 #   step_a: 1                     # +/- adjustment per decision tick
+#   night_charge_enabled: false   # after sunset: fixed-current charge fed from the home battery
+#   night_charge_a: 6             # fixed night setpoint (6-16, within min/max)
+#   night_floor_soc_pct: 20       # stop the night charge when the battery drains to this SoC
 
 storage:
   sqlite_path: data/orchestrator.db

@@ -79,6 +79,7 @@ from energy_orchestrator.vehicle import (
     VehicleError,
     VehicleProvider,
     VehicleRecord,
+    haversine_m,
 )
 from energy_orchestrator.web.override import OverrideController
 
@@ -667,11 +668,34 @@ class TickLoop:
         cfg = self.config.tronity
         assert cfg is not None  # caller guards; re-stated for the type checker
         age = record.age(now)
+        # Distance to the home geofence centre, so an "at_home" verdict is
+        # quantified (37 m reads very differently from 25 km) and a pinned
+        # position is visible in one number across polls.
+        distance_home_m: float | None = None
+        if (
+            cfg.home_latitude is not None
+            and cfg.home_longitude is not None
+            and record.latitude is not None
+            and record.longitude is not None
+        ):
+            distance_home_m = round(
+                haversine_m(
+                    record.latitude, record.longitude, cfg.home_latitude, cfg.home_longitude
+                )
+            )
         return {
             "soc_pct": record.soc_pct,
             "plugged": record.plugged,
             "charging": record.charging,
             "range_km": record.range_km,
+            # Odometer + raw position make each poll self-contained for tracing
+            # a stale fix: after a real drive the odometer MUST have advanced,
+            # so odometer moving while lat/lon stays pinned proves the position
+            # field is frozen upstream rather than the whole record being stale.
+            "odometer_km": record.odometer_km,
+            "latitude": record.latitude,
+            "longitude": record.longitude,
+            "distance_home_m": distance_home_m,
             "recorded_at": record.recorded_at.isoformat() if record.recorded_at else None,
             "age_s": age.total_seconds() if age is not None else None,
             "fresh": record.is_fresh(now, timedelta(seconds=cfg.stale_after_s)),

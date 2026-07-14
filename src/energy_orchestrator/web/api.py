@@ -41,7 +41,7 @@ from energy_orchestrator.decision.charger_control import ChargerMode
 from energy_orchestrator.devices.errors import DeviceError
 from energy_orchestrator.devices.etrel import EtrelInchClient
 from energy_orchestrator.prices import PriceCache
-from energy_orchestrator.solar import SolarCache
+from energy_orchestrator.solar import SolarCache, SolarForecast
 from energy_orchestrator.vehicle import VehicleCache, VehicleRecord
 from energy_orchestrator.web.dependencies import (
     get_charger_status,
@@ -92,6 +92,28 @@ def _local_day_window(date_str: str) -> tuple[datetime, datetime]:
     start = local_midnight.astimezone(UTC)
     end = (local_midnight + timedelta(days=1)).astimezone(UTC)
     return start, end
+
+
+def _solar_day_total(forecast: SolarForecast | None, date_str: str) -> float | None:
+    """Expected production (Wh) for the requested server-local day, if the
+    in-memory forecast covers it.
+
+    Forecast.Solar only reports day totals for today and tomorrow, so any
+    other date (historic browsing) yields ``None`` — the persisted point
+    series has no authoritative aggregate to fall back on.
+    """
+    if forecast is None:
+        return None
+    try:
+        requested = datetime.fromisoformat(f"{date_str}T00:00:00").astimezone().date()
+    except ValueError:
+        return None
+    local_today = datetime.now().astimezone().date()
+    if requested == local_today:
+        return forecast.watt_hours_today
+    if requested == local_today + timedelta(days=1):
+        return forecast.watt_hours_tomorrow
+    return None
 
 
 # ----- request/response models ------------------------------------------------
@@ -448,9 +470,12 @@ async def get_solar(
 
     Without ``date``, serves the in-memory cache (today + tomorrow plus
     today/tomorrow kWh totals). With ``date=YYYY-MM-DD`` the persisted
-    ``solar_forecast_points`` table is queried for that local calendar day;
-    aggregate kWh fields are not available for historic days and come back
-    as ``null``.
+    ``solar_forecast_points`` table is queried for that local calendar day.
+
+    ``watt_hours_day`` is the expected total for the *viewed* day: equal to
+    ``watt_hours_today`` on the cache view, resolved from the in-memory cache
+    when ``date`` is local today/tomorrow (the tomorrow-preview nav), and
+    ``null`` for historic days where no authoritative aggregate exists.
     """
     if date is not None:
         start, end = _local_day_window(date)
@@ -477,6 +502,7 @@ async def get_solar(
             "date": date,
             "watt_hours_today": None,
             "watt_hours_tomorrow": None,
+            "watt_hours_day": _solar_day_total(solar_cache.forecast(), date),
             "points": points,
             "per_plane": per_plane,
         }
@@ -493,6 +519,7 @@ async def get_solar(
             "date": None,
             "watt_hours_today": None,
             "watt_hours_tomorrow": None,
+            "watt_hours_day": None,
             "points": [],
             "per_plane": {},
         }
@@ -518,6 +545,7 @@ async def get_solar(
         "date": None,
         "watt_hours_today": forecast.watt_hours_today,
         "watt_hours_tomorrow": forecast.watt_hours_tomorrow,
+        "watt_hours_day": forecast.watt_hours_today,
         "points": points,
         "per_plane": per_plane,
     }

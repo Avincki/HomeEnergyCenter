@@ -31,6 +31,7 @@ from energy_orchestrator.data import (
     UnitOfWork,
 )
 from energy_orchestrator.prices import PricePoint
+from energy_orchestrator.solar import SolarForecast, SolarPoint
 from energy_orchestrator.web.app import create_app
 
 
@@ -419,6 +420,66 @@ async def test_solaredge_toggle_ok_with_tick_loop(client: AsyncClient) -> None:
 async def test_override_minutes_out_of_range_rejected(client: AsyncClient) -> None:
     resp = await client.post("/api/override", json={"mode": "force_on", "minutes": 0})
     assert resp.status_code == 422
+
+
+# ----- API: /api/solar ----------------------------------------------------------
+
+
+def _seed_solar_cache(client: AsyncClient) -> None:
+    now = datetime.now(UTC)
+    forecast = SolarForecast(
+        points=(SolarPoint(timestamp=now, watts=1500.0),),
+        per_plane={"east": (SolarPoint(timestamp=now, watts=1500.0),)},
+        watt_hours_today=12000.0,
+        watt_hours_tomorrow=8500.0,
+    )
+    client._transport.app.state.solar_cache.replace(forecast, now)  # type: ignore[attr-defined]
+
+
+async def test_solar_cache_view_exposes_viewed_day_total(client: AsyncClient) -> None:
+    _seed_solar_cache(client)
+    resp = await client.get("/api/solar")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["watt_hours_today"] == 12000.0
+    assert body["watt_hours_tomorrow"] == 8500.0
+    # The viewed day on the cache view is today.
+    assert body["watt_hours_day"] == 12000.0
+
+
+async def test_solar_tomorrow_date_view_exposes_tomorrow_total(client: AsyncClient) -> None:
+    _seed_solar_cache(client)
+    tomorrow = (datetime.now().astimezone() + timedelta(days=1)).date().isoformat()
+    resp = await client.get(f"/api/solar?date={tomorrow}")
+    assert resp.status_code == 200
+    body = resp.json()
+    # Per-date aggregates aren't persisted, but the in-memory forecast covers
+    # tomorrow, so the viewed-day total resolves from the cache.
+    assert body["watt_hours_today"] is None
+    assert body["watt_hours_day"] == 8500.0
+
+
+async def test_solar_today_date_view_exposes_today_total(client: AsyncClient) -> None:
+    _seed_solar_cache(client)
+    today = datetime.now().astimezone().date().isoformat()
+    resp = await client.get(f"/api/solar?date={today}")
+    assert resp.status_code == 200
+    assert resp.json()["watt_hours_day"] == 12000.0
+
+
+async def test_solar_historic_date_view_has_no_day_total(client: AsyncClient) -> None:
+    _seed_solar_cache(client)
+    yesterday = (datetime.now().astimezone() - timedelta(days=1)).date().isoformat()
+    resp = await client.get(f"/api/solar?date={yesterday}")
+    assert resp.status_code == 200
+    assert resp.json()["watt_hours_day"] is None
+
+
+async def test_solar_date_view_without_cache_has_no_day_total(client: AsyncClient) -> None:
+    tomorrow = (datetime.now().astimezone() + timedelta(days=1)).date().isoformat()
+    resp = await client.get(f"/api/solar?date={tomorrow}")
+    assert resp.status_code == 200
+    assert resp.json()["watt_hours_day"] is None
 
 
 # ----- HTML views --------------------------------------------------------------

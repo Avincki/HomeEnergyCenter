@@ -801,8 +801,18 @@
         badge.removeAttribute("hidden");
     }
 
-    function applySolarToday(solarJson) {
-        const wh = solarJson && solarJson.watt_hours_today;
+    // "Expected Solar" in the chart title tracks the *viewed* day:
+    // watt_hours_day is filled by the server for today and — once the
+    // forecast covers it — for the tomorrow preview (Next button), so the
+    // total no longer blanks out when browsing tomorrow. Falls back to
+    // watt_hours_today for a server that predates the field (PWA cache skew).
+    function applySolarDayTotal(solarJson) {
+        if (!solarJson) {
+            setText("chart-title-solar-today", "—");
+            return;
+        }
+        const wh = solarJson.watt_hours_day !== undefined
+            ? solarJson.watt_hours_day : solarJson.watt_hours_today;
         setText("chart-title-solar-today",
             wh != null ? (wh / 1000.0).toFixed(1) + " kWh" : "—");
     }
@@ -854,7 +864,7 @@
                 fetchJson(urls.solar),
             ]);
             applyState(state);
-            applySolarToday(solarJson);
+            applySolarDayTotal(solarJson);
             applyCurrentHourPrice(priceJson.prices || []);
             updateChart(priceJson.prices || [], history.readings || [],
                         (solarJson && solarJson.points) || []);

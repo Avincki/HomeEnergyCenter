@@ -2037,3 +2037,50 @@ tuning calls for it.
 ### State at end-of-session
 
 - Committed and pushed to `origin/main`; Pi deploy = `git pull` there.
+
+## 2026-07-14 (evening) — EQS "always At home": diagnosis + trace prep for 2026-07-15
+
+### The complaint
+
+Dashboard EQS tile always shows "At home". Assessment (code + known Tronity
+behaviour): Tronity `last_record` keeps echoing the last GPS fix it received —
+for a car that parks at home, that's the driveway — while the car is driving
+or parked offline. Our side compounds it: `VehicleRecord.at_home()`
+(`vehicle/base.py`) has no freshness gate and `dashboard.js` renders the
+"At home" chip unconditionally. Extra subtlety: the record `timestamp` tracks
+the newest field, so `fresh` can be true while the lat/lon inside is old
+(no per-field timestamps upstream).
+
+### What shipped (`1a9fc88`)
+
+- `_vehicle_status_payload` (orchestrator.py) — the "tronity record fetched"
+  log line + persisted source_status payload now carry `latitude`,
+  `longitude`, `odometer_km`, and computed `distance_home_m`, making each
+  15-min poll self-contained for the trace: odometer climbing while lat/lon
+  stays pinned = frozen position fix upstream; everything frozen = whole
+  record stale; large distance with at_home=true = geofence config wrong.
+
+### Side finding + resolution
+
+- The Pi web service was DOWN when first checked (nothing listening on :8000
+  via Tailscale or LAN; Pi itself up). User pulled + restarted; verified live
+  afterwards via `/api/vehicle` and `/api/sources`.
+
+### Trace baselines (car at home, charging, 2026-07-14 ~20:50 Brussels)
+
+- `distance_home_m: 1` — geofence centre dead-on the parking spot.
+- Odometer 40093 km; home fix ~(51.0594083, 3.7730301); poll cadence 15 min.
+
+### Next session (2026-07-15, user away with the car)
+
+Ask for `grep "tronity record fetched"
+~/HomeEnergyCenter/logs/energy_orchestrator.log | tail -40` from the Pi,
+classify the failure mode, then wire the agreed fix: show/trust "At home"
+only when `fresh && at_home`; never block on `at_home=false` (soft-confirm
+only). Plan also saved in auto-memory (`project_at_home_trace.md`).
+
+### Gotcha (repeat warning)
+
+Do NOT edit this history file with default-encoding PowerShell cmdlets —
+a `Get-Content`/`Set-Content` round-trip double-encoded the whole file
+earlier today (restored from git). Use the harness Edit/Write tools.

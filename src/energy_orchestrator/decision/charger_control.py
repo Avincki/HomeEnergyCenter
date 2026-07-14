@@ -41,8 +41,10 @@ actually drawing near the commanded current — otherwise an unplugged / full /
 externally-clamped car would wind the accumulator to the ceiling and then dump
 full current the moment it could draw.
 
-Night mode (``night_charge_enabled``): after sunset the car charges at a fixed
-``night_charge_a`` fed from the home battery, down to ``night_floor_soc_pct``
+Night mode (``night_charge_enabled``): from the later of sunset and
+``night_start_time`` (Brussels wall-clock, default 24:00 = midnight) the car
+charges at a fixed ``night_charge_a`` fed from the home battery, down to
+``night_floor_soc_pct``
 (a deliberately lower floor than the daytime charge-stop — the bet is that
 tomorrow's solar refills the battery). There is no surplus to follow at night,
 so the envelope is binary {0, night_charge_a} and the guard is *measured* grid
@@ -68,6 +70,7 @@ from astral import Observer
 from astral.sun import elevation, sun
 
 from energy_orchestrator.config.models import ChargerControlConfig
+from energy_orchestrator.utils.clock import to_local
 
 logger = structlog.stdlib.get_logger(__name__)
 
@@ -365,6 +368,8 @@ class ChargerController:
         cfg = self.config
         if not cfg.night_charge_enabled:
             return self._pause("outside solar daytime (night charging disabled)")
+        if not self._night_start_reached(inp.timestamp):
+            return self._pause(f"night: waiting for start time {cfg.night_start_time} (Brussels)")
         if not inp.car_attached:
             return self._pause("no chargeable car attached")
         if not self._night_soc_floor_ok(inp.battery_soc_pct):
@@ -428,6 +433,20 @@ class ChargerController:
             f"night: start {night_a:.0f} A from battery "
             f"(SoC {inp.battery_soc_pct:.0f}% > floor {cfg.night_floor_soc_pct:.0f}%)",
         )
+
+    def _night_start_reached(self, when: datetime) -> bool:
+        """True once the local wall clock has passed ``night_start_time``.
+
+        The configured time is Brussels wall-clock (24:00 = midnight). Both
+        instants are mapped to minutes-since-noon so the sunset -> sunrise
+        window is contiguous across midnight: 22:00 < 24:00 < 03:00 order
+        correctly, and the pre-dawn hours always count as past an evening
+        start time.
+        """
+        local = to_local(when)
+        now_m = (local.hour * 60 + local.minute - 12 * 60) % (24 * 60)
+        start_m = (self.config.night_start_minutes - 12 * 60) % (24 * 60)
+        return now_m >= start_m
 
     def _night_soc_floor_ok(self, soc_pct: float) -> bool:
         # Same latch shape as the daytime floor, against the (lower) night

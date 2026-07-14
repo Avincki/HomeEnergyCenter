@@ -381,6 +381,53 @@ def test_night_charge_a_must_fit_envelope() -> None:
         _config(night_charge_a=8.0, max_charge_a=7.0)
 
 
+# ----- night start time ----------------------------------------------------------
+# _NIGHT_TS (22:00 UTC in May) is exactly 00:00 Brussels (CEST), so the tests
+# above run right at the default 24:00 start boundary. These pin the gate.
+
+
+def test_night_waits_for_default_midnight_start() -> None:
+    # 23:30 Brussels (21:30 UTC) is after sunset but before the default 24:00.
+    ctrl = ChargerController(_night_config())
+    cmd = ctrl.decide(
+        _night_inputs(timestamp=datetime(2026, 5, 22, 21, 30, tzinfo=UTC), battery_soc_pct=80.0)
+    )
+    assert cmd.paused and "start time" in cmd.reason
+
+
+def test_night_starts_at_configured_evening_time() -> None:
+    ctrl = ChargerController(_night_config(night_start_time="22:30"))
+    # 22:00 Brussels — before the configured start.
+    early = ctrl.decide(
+        _night_inputs(timestamp=datetime(2026, 5, 22, 20, 0, tzinfo=UTC), battery_soc_pct=80.0)
+    )
+    assert early.paused and "start time" in early.reason
+    # 22:30 Brussels — start reached.
+    late = ctrl.decide(
+        _night_inputs(timestamp=datetime(2026, 5, 22, 20, 30, tzinfo=UTC), battery_soc_pct=80.0)
+    )
+    assert not late.paused and late.target_a == 6.0
+
+
+def test_night_start_window_spans_midnight() -> None:
+    # 01:00 Brussels is past a 23:00 start — the night window is contiguous
+    # across midnight, not a same-day clock comparison.
+    ctrl = ChargerController(_night_config(night_start_time="23:00"))
+    cmd = ctrl.decide(
+        _night_inputs(timestamp=datetime(2026, 5, 22, 23, 0, tzinfo=UTC), battery_soc_pct=80.0)
+    )
+    assert not cmd.paused and cmd.target_a == 6.0
+
+
+def test_night_start_time_must_be_valid_hhmm() -> None:
+    with pytest.raises(ValueError, match="HH:MM"):
+        _config(night_start_time="25:00")
+    with pytest.raises(ValueError, match="HH:MM"):
+        _config(night_start_time="24:30")
+    with pytest.raises(ValueError, match="HH:MM"):
+        _config(night_start_time="8pm")
+
+
 # ----- daytime helper ----------------------------------------------------------
 
 

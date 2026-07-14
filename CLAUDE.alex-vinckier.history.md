@@ -2009,3 +2009,31 @@ removed — would need user approval to revive) and night/price-aware charging
 (currently solar-daytime only). A separate sensitivity knob for over-discharge
 vs. real grid import (both reuse `import_threshold_w` today) is a quick add if
 tuning calls for it.
+
+## 2026-07-14 (later) — night_start_time: hold the night charge until a wall-clock start
+
+### What shipped
+
+- `ChargerControlConfig.night_start_time` (new `WallTime` type, HH:MM,
+  00:00-24:00 where 24:00 = midnight; default "24:00"). Night charging now
+  starts at the **later of sunset and this time** — the `_night_decide` gate
+  pauses with "waiting for start time" until then.
+- Gate maps both instants to minutes-since-noon (Brussels via
+  `utils/clock.to_local`) so the sunset→sunrise window is contiguous across
+  midnight: 22:00 < 24:00 < 03:00 order correctly, pre-dawn hours always count
+  as past an evening start.
+- Exposed in the web /config form (Etrel section, "Night start time (HH:MM)")
+  and documented in `config.example.yaml`.
+- Tests: default-midnight wait, configured evening start, cross-midnight
+  window, HH:MM validation (25:00 / 24:30 / "8pm" rejected). Full suite: 400
+  pass. Note `_NIGHT_TS` (22:00 UTC in May) is exactly 00:00 Brussels, so the
+  pre-existing night tests sit right on the default 24:00 boundary and pass
+  unchanged.
+- Gotcha (self-inflicted, fixed): a PS 5.1 `Get-Content`/`Set-Content`
+  round-trip on this history file double-encoded its UTF-8 (no BOM → read as
+  cp1252) — restored via `git checkout --` and re-appended with a proper
+  UTF-8 write. Don't edit this file with default-encoding PowerShell cmdlets.
+
+### State at end-of-session
+
+- Committed and pushed to `origin/main`; Pi deploy = `git pull` there.

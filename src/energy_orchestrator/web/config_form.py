@@ -303,6 +303,12 @@ SECTIONS: tuple[tuple[str, tuple[WebSection, ...]], ...] = (
                         "pauses instead of importing from the grid",
                     ),
                     WebField(
+                        "Night start time (HH:MM)",
+                        "charger_control.night_start_time",
+                        hint="Brussels wall-clock; charging starts at the later of "
+                        "sunset and this time (24:00 = midnight)",
+                    ),
+                    WebField(
                         "Night charge current (A)",
                         "charger_control.night_charge_a",
                         hint="fixed setpoint after sunset (6-16, within min/max)",

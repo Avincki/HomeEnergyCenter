@@ -36,6 +36,20 @@ Host = Annotated[str, AfterValidator(_validate_host)]
 Port = Annotated[int, Field(ge=1, le=65535)]
 Percent = Annotated[float, Field(ge=0.0, le=100.0)]
 
+_WALL_TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+
+
+def _validate_wall_time(value: str) -> str:
+    """Accept 'HH:MM' in 00:00-24:00 (24:00 = midnight, end of the day)."""
+    v = value.strip()
+    m = _WALL_TIME_RE.match(v)
+    if not m or int(m.group(2)) > 59 or int(m.group(1)) * 60 + int(m.group(2)) > 24 * 60:
+        raise ValueError(f"{value!r} is not a valid HH:MM wall-clock time (00:00-24:00)")
+    return v
+
+
+WallTime = Annotated[str, AfterValidator(_validate_wall_time)]
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -353,6 +367,16 @@ class ChargerControlConfig(_StrictModel):
     night_charge_enabled: bool = False
     night_charge_a: float = Field(default=6.0, ge=6.0, le=16.0)
     night_floor_soc_pct: Percent = 20.0
+    # Earliest wall-clock start for the night charge (Brussels time, HH:MM;
+    # 24:00 = midnight). Charging begins at the later of sunset and this, so
+    # the charge can be held back for late-night hours.  [TUNABLE]
+    night_start_time: WallTime = "24:00"
+
+    @property
+    def night_start_minutes(self) -> int:
+        """``night_start_time`` as minutes since local midnight (24:00 -> 1440)."""
+        hh, mm = self.night_start_time.split(":")
+        return int(hh) * 60 + int(mm)
 
     @model_validator(mode="after")
     def _envelope_consistent(self) -> ChargerControlConfig:

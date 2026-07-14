@@ -89,6 +89,8 @@ decision:
 #   max_charge_a: 16              # installation hard cap (<= 16 A)
 #   step_a: 1                     # +/- adjustment per decision tick
 #   night_charge_enabled: false   # after sunset: fixed-current charge fed from the home battery
+#   night_start_time: "24:00"     # earliest local start (Brussels HH:MM, 24:00 = midnight);
+#                                 # charging begins at the later of sunset and this time
 #   night_charge_a: 6             # fixed night setpoint (6-16, within min/max)
 #   night_floor_soc_pct: 20       # stop the night charge when the battery drains to this SoC
 

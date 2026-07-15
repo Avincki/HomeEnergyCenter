@@ -109,6 +109,32 @@ class VehicleRecord:
             return None
         return haversine_m(self.latitude, self.longitude, home_lat, home_lon) <= radius_m
 
+    def at_home_confirmed(
+        self,
+        now: datetime,
+        stale_after: timedelta,
+        home_lat: float | None,
+        home_lon: float | None,
+        radius_m: float,
+    ) -> bool:
+        """True only when "at home" is corroborated by a live channel.
+
+        The geofence verdict alone is not trustworthy: the upstream position
+        (and odometer) channel can freeze on the last home fix while SoC keeps
+        flowing, so the record stays ``fresh`` around a stale location
+        (observed 2026-07-15: car 80 km away, fix pinned 2 m from home).
+        ``plugged`` is delivered live — it flipped at departure — so a plugged
+        car whose fix is inside the geofence really is on the home charger.
+
+        Fail-closed: ``False`` means "can't confirm", never "away" — callers
+        may decline to assert "at home" but must not block on it.
+        """
+        return (
+            self.plugged is True
+            and self.is_fresh(now, stale_after)
+            and self.at_home(home_lat, home_lon, radius_m) is True
+        )
+
 
 class VehicleProvider(ABC):
     """Source of EV telemetry. One concrete provider per upstream cloud API."""

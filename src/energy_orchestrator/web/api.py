@@ -193,9 +193,11 @@ def _vehicle_to_dict(
 ) -> dict[str, Any] | None:
     """Serialize the cached EV telemetry plus the derived trust signals.
 
-    ``fresh`` (record recent enough) and ``at_home`` (within the configured
-    geofence) are the gates a future charge-control rule would consult; surfaced
-    here so the dashboard can show *why* a SoC is or isn't being trusted.
+    ``at_home_confirmed`` (fresh AND geofenced-home AND plugged) is the gate a
+    charge-control rule must consult and what the dashboard chip renders; the
+    raw ``fresh`` / ``at_home`` pair stays for diagnostics — geofence alone
+    can't be trusted because the position channel can freeze on the last home
+    fix while SoC keeps the record fresh.
     Returns ``None`` when Tronity isn't configured or no record exists yet.
     """
     cfg = config.tronity
@@ -216,6 +218,13 @@ def _vehicle_to_dict(
         "age_s": age.total_seconds() if age is not None else None,
         "fresh": record.is_fresh(now, timedelta(seconds=cfg.stale_after_s)),
         "at_home": record.at_home(cfg.home_latitude, cfg.home_longitude, cfg.geofence_radius_m),
+        "at_home_confirmed": record.at_home_confirmed(
+            now,
+            timedelta(seconds=cfg.stale_after_s),
+            cfg.home_latitude,
+            cfg.home_longitude,
+            cfg.geofence_radius_m,
+        ),
     }
 
 

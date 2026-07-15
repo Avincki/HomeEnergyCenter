@@ -2084,3 +2084,71 @@ only). Plan also saved in auto-memory (`project_at_home_trace.md`).
 Do NOT edit this history file with default-encoding PowerShell cmdlets —
 a `Get-Content`/`Set-Content` round-trip double-encoded the whole file
 earlier today (restored from git). Use the harness Edit/Write tools.
+
+## 2026-07-15 — EQS at-home trace executed: failure mode confirmed (and the planned fix invalidated)
+
+### How the log was pulled (SSH to the Pi is dead over Tailscale)
+
+Port 22 is unreachable over the tailnet (times out via direct dial,
+`tailscale nc` proxy, and Tailscale SSH — sshd is LAN-bound or firewalled;
+only :8000 answers). Workaround that works from anywhere:
+`curl -sN --max-time 30 "https://homecenter.tail7b791a.ts.net:8000/api/logs/stream?replay_hours=24" | grep "tronity record fetched"`
+— the SSE replay endpoint serves the whole rotating log file over HTTPS.
+Also: the Windows Tailscale client sat in "NoState/starting" for ~a minute
+after boot; TCP timed out while `tailscale ping` succeeded until it settled.
+
+### Trace verdict (car ~80 km away, 630 polls / 24 h analysed)
+
+- Departure 09:51 Brussels visible upstream: `charging` → Disconnected,
+  `plugged` → false, then SoC fell 90→78 over ~1.5 h of driving.
+- **Frozen channels:** `latitude`/`longitude` pinned 2 m from the geofence
+  centre and `odometer_km` stuck at 40093 for the entire drive — position
+  AND odometer froze (stronger than the predicted odometer-climbs variant).
+- **Live channels:** SoC, plugged, charging — every poll. Because
+  `recorded_at` tracks the newest field, `fresh` stayed **true** throughout.
+- Secondary: 04:19–06:57 Brussels the whole record went stale (car asleep
+  mid-charge, recorded_at frozen 3.7 h, fresh=false) and the chip still
+  showed "At home" — confirms the unconditional render.
+
+### Consequence — the agreed fix is insufficient
+
+`fresh && at_home` would still show "At home" right now: record-level
+freshness structurally cannot catch a frozen position channel. Options put
+to Alex (not yet wired):
+- Control gate: trust SoC only when `fresh && at_home && plugged` —
+  Tronity's `plugged` flipped correctly at departure, and control only
+  matters when plugged anyway. Still never block on at_home=false.
+- Chip: persist our own position-changed-at (last time the
+  lat/lon/odometer tuple changed) and render "At home" only when
+  corroborated, else "location stale".
+
+### Side answer — Tronity app shows the same stale "at home"
+
+Confirms the freeze is Tronity-platform-side, not our pipeline. Not a
+missing setting: Mercedes' third-party API delivers GPS as trip-end
+snapshots (no live tracking for third parties — privacy by design), while
+battery/charging data flows near-live; Mercedes me uses an internal channel.
+Tronity has no cadence setting — it consumes what the OEM pushes.
+
+### Fix wired (same day): plugged corroboration
+
+- `VehicleRecord.at_home_confirmed(now, stale_after, home_lat, home_lon,
+  radius_m)` (`vehicle/base.py`) — True only when fresh AND geofenced-home
+  AND `plugged is True`; fail-closed, soft-confirm only (False = "can't
+  confirm", never "away").
+- Exposed as `at_home_confirmed` in both `_vehicle_status_payload`
+  (orchestrator.py → log line + source_status) and `_vehicle_to_dict`
+  (web/api.py → `/api/vehicle`, `/api/state`).
+- `dashboard.js` chip: confirmed → "At home"; `at_home === false` → "Away";
+  uncorroborated home fix → "Last seen home" (today's failure shape).
+- `sw.js` CACHE bumped v6→v7 (front-end change → PWA cache).
+- Tests: 4 new cases in `test_vehicle_base.py` incl. the exact 2026-07-15
+  shape (fresh + home fix + unplugged → False). Full suite 404 pass.
+- Verified the serializer against today's live JSON values: frozen-fix
+  unplugged → "Last seen home"; plugged at home → "At home".
+
+### State at end-of-session
+
+Committed and pushed to `origin/main`; Pi deploy = `git pull` there (+ the
+service restart one-shot in raspberry-pi-setup.md §9.1). Auto-memory
+`project_at_home_trace.md` updated with verdict + fix.

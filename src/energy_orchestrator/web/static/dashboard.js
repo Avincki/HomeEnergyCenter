@@ -680,8 +680,12 @@
         const parts = [];
         const age = fmtAge(vehicle.age_s);
         if (age) parts.push(vehicle.fresh ? age : age + " (stale)");
-        if (vehicle.at_home === true) parts.push("At home");
+        // "At home" only when corroborated (fresh + geofence + plugged): the
+        // position channel can freeze on the last home fix while SoC keeps the
+        // record fresh, so an uncorroborated home fix only means "last seen".
+        if (vehicle.at_home_confirmed === true) parts.push("At home");
         else if (vehicle.at_home === false) parts.push("Away");
+        else if (vehicle.at_home === true) parts.push("Last seen home");
         if (vehicle.charging) parts.push(String(vehicle.charging).toLowerCase());
         metaEl.textContent = parts.length ? parts.join(" · ") : "—";
     }

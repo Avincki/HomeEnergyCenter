@@ -63,3 +63,68 @@ def test_at_home_none_without_home_or_coords() -> None:
     # No coords in the record.
     rec2 = _record(latitude=None, longitude=None)
     assert rec2.at_home(_HOME_LAT, _HOME_LON, radius_m=200.0) is None
+
+
+_NOW = datetime(2026, 6, 1, 12, 0, tzinfo=UTC)
+_STALE_AFTER = timedelta(minutes=30)
+
+
+def _confirmed(rec: VehicleRecord) -> bool:
+    return rec.at_home_confirmed(_NOW, _STALE_AFTER, _HOME_LAT, _HOME_LON, 200.0)
+
+
+def test_at_home_confirmed_when_fresh_home_and_plugged() -> None:
+    rec = _record(
+        latitude=_HOME_LAT,
+        longitude=_HOME_LON,
+        plugged=True,
+        recorded_at=_NOW - timedelta(minutes=5),
+    )
+    assert _confirmed(rec) is True
+
+
+def test_at_home_confirmed_false_without_plugged() -> None:
+    # The 2026-07-15 failure shape: position frozen on the home fix and SoC
+    # updates keeping the record fresh — but the car is unplugged and away.
+    frozen_home_fix = _record(
+        latitude=_HOME_LAT,
+        longitude=_HOME_LON,
+        plugged=False,
+        recorded_at=_NOW - timedelta(minutes=5),
+    )
+    assert _confirmed(frozen_home_fix) is False
+    # Unknown plugged state fails closed too.
+    unknown = _record(
+        latitude=_HOME_LAT,
+        longitude=_HOME_LON,
+        plugged=None,
+        recorded_at=_NOW - timedelta(minutes=5),
+    )
+    assert _confirmed(unknown) is False
+
+
+def test_at_home_confirmed_false_when_stale() -> None:
+    rec = _record(
+        latitude=_HOME_LAT,
+        longitude=_HOME_LON,
+        plugged=True,
+        recorded_at=_NOW - timedelta(hours=2),
+    )
+    assert _confirmed(rec) is False
+
+
+def test_at_home_confirmed_false_when_away_or_unknown_position() -> None:
+    away = _record(
+        latitude=_HOME_LAT + 0.05,
+        longitude=_HOME_LON,
+        plugged=True,
+        recorded_at=_NOW - timedelta(minutes=5),
+    )
+    assert _confirmed(away) is False
+    no_fix = _record(
+        latitude=None,
+        longitude=None,
+        plugged=True,
+        recorded_at=_NOW - timedelta(minutes=5),
+    )
+    assert _confirmed(no_fix) is False

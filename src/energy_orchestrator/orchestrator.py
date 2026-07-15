@@ -661,9 +661,11 @@ class TickLoop:
     def _vehicle_status_payload(self, record: VehicleRecord, now: datetime) -> dict[str, Any]:
         """JSON-serializable snapshot for SourceStatus / the debug board.
 
-        ``fresh`` and ``at_home`` are the trust signals a future charge-control
-        gate would consult (per the EQS design notes: SoC is only trustworthy
-        when recent AND geofence-confirmed at home).
+        ``at_home_confirmed`` is the trust signal a charge-control gate must
+        consult: fresh AND geofenced-home AND plugged. The raw ``fresh`` /
+        ``at_home`` pair is kept for tracing, but is not sufficient on its own —
+        the position channel can freeze on the last home fix while SoC keeps
+        the record fresh (see ``VehicleRecord.at_home_confirmed``).
         """
         cfg = self.config.tronity
         assert cfg is not None  # caller guards; re-stated for the type checker
@@ -701,6 +703,13 @@ class TickLoop:
             "fresh": record.is_fresh(now, timedelta(seconds=cfg.stale_after_s)),
             "at_home": record.at_home(
                 cfg.home_latitude, cfg.home_longitude, cfg.geofence_radius_m
+            ),
+            "at_home_confirmed": record.at_home_confirmed(
+                now,
+                timedelta(seconds=cfg.stale_after_s),
+                cfg.home_latitude,
+                cfg.home_longitude,
+                cfg.geofence_radius_m,
             ),
         }
 

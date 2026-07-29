@@ -261,12 +261,12 @@
         );
     }
 
-    // Top-of-page state card sub-line: live Etrel charger status, the
-    // currently-applied current setpoint (reg 4) and the installer-configured
-    // ceiling (reg 1028). Always visible alongside the SolarEdge state so
-    // the user can see the charger's max-power limit at a glance, with
-    // em-dashes when individual fields haven't been read yet. Hidden only
-    // when Etrel isn't configured at all — i.e. no source row exists.
+    // Top-of-page state card sub-line: the currently-applied current setpoint
+    // (reg 4) and the installer-configured ceiling (reg 1028). Always visible
+    // alongside the SolarEdge state so the user can see the charger's
+    // max-power limit at a glance, with em-dashes when individual fields
+    // haven't been read yet. Hidden only when Etrel isn't configured at all
+    // — i.e. no source row exists.
     function applyEtrelStateLine(state) {
         const sources = (state && state.sources) || [];
         const isConfigured = sources.some((s) => s && s.source_name === "etrel");
@@ -276,7 +276,6 @@
         }
         setHidden("state-etrel", false);
         const etrel = sourcePayload(state, "etrel");
-        setText("state-etrel-status", etrel.status ? String(etrel.status) : "—");
         setText("state-etrel-setpoint",
             etrel.setpoint_a != null ? etrel.setpoint_a.toFixed(1) : "—");
         setText("state-etrel-max",
@@ -298,8 +297,6 @@
         if (!c) {
             setText("state-charger-target", "—");
             setText("state-charger-reason", "charger control inactive or no decision yet");
-            setText("state-charger-when", "");
-            setHidden("state-charger-when", true);
             setHidden("state-charger-dry-run", true);
             setHidden("state-charger-mode", true);
             applyChargerModeButtons(null);
@@ -310,9 +307,6 @@
             : (c.target_a != null ? `Charging ${c.target_a.toFixed(0)} A` : "—");
         setText("state-charger-target", target);
         setText("state-charger-reason", c.reason || "—");
-        setText("state-charger-when",
-            c.timestamp ? `decided ${fmtTimeFull(c.timestamp)}` : "");
-        setHidden("state-charger-when", !c.timestamp);
         setHidden("state-charger-dry-run", !c.dry_run);
         // Mode badge + active-button highlight, so it's obvious whether the
         // algorithm or a forced setpoint is in control.
@@ -722,16 +716,13 @@
             setHidden("state-empty-headline", true);
             setHidden("state-headline", false);
             setHidden("state-rule", false);
-            setHidden("state-when", false);
             setText("state-text", String(decision.state || "").toUpperCase());
             setText("state-rule", decision.rule_fired || "");
             setText("state-reason", decision.reason || "");
-            setText("state-when", "decided " + fmtTimeFull(decision.timestamp));
         } else {
             setHidden("state-empty-headline", false);
             setHidden("state-headline", true);
             setHidden("state-rule", true);
-            setHidden("state-when", true);
             setText("state-reason",
                 "The orchestrator tick loop hasn't produced a decision — " +
                 "populate config.yaml and start the service.");
@@ -883,7 +874,10 @@
             const status = document.getElementById("dashboard-refresh-status");
             if (status) {
                 if (isViewingToday()) {
-                    status.textContent = `Live — last refresh ${fmtTimeShort(new Date().toISOString())}.`;
+                    const decidedTxt = state.decision && state.decision.timestamp
+                        ? ` — decided ${fmtTimeFull(state.decision.timestamp)}`
+                        : "";
+                    status.textContent = `Live — last refresh ${fmtTimeShort(new Date().toISOString())}${decidedTxt}.`;
                 } else {
                     status.textContent = `Showing ${fmtDateYMD(viewedDate)} — live polling paused.`;
                 }
@@ -1111,73 +1105,6 @@
         return `Write failed: ${data.write_error || "unknown"} · ${readbackTxt}`;
     }
 
-    // SolarEdge tile probe button: POST /api/solaredge/test-toggle, which
-    // writes the inverter's active-power-limit register directly (0 %/100 %),
-    // bypassing the engine and dry-run, so the user can confirm the hardware
-    // physically obeys curtailment. Not sticky — the tick loop re-asserts the
-    // engine's decision on its next decision tick when dry-run is off.
-    function wireSolarEdgeTestControl() {
-        const btn = document.getElementById("se-toggle-btn");
-        const status = document.getElementById("se-test-status");
-        if (!btn) return;
-
-        btn.addEventListener("click", async () => {
-            btn.disabled = true;
-            if (status) status.textContent = "Sending…";
-            try {
-                const resp = await fetch("/api/solaredge/test-toggle", { method: "POST" });
-                if (!resp.ok) {
-                    const detail = await resp.text();
-                    throw new Error(`HTTP ${resp.status}: ${detail}`);
-                }
-                const data = await resp.json();
-                if (status) status.textContent = formatSolarEdgeTestResult(data);
-            } catch (e) {
-                if (status) status.textContent = `Failed: ${e.message}`;
-            } finally {
-                btn.disabled = false;
-            }
-        });
-    }
-
-    // TEMPORARY (remove me): summarise the one-shot Advanced Power Control
-    // enable that the probe runs before curtailing. Drop this helper and its
-    // call below once the installer commits APC in SetApp — see solaredge.py.
-    //   already on → "APC on"; just turned on → "APC enabled+committed";
-    //   failed/rejected → "APC enable failed: …".
-    function formatApcSegment(apc) {
-        if (!apc) return "";
-        if (apc.error) return ` · APC enable failed: ${apc.error}`;
-        if (apc.already_enabled) return " · APC on";
-        if (apc.committed && apc.enabled_now) return " · APC enabled+committed";
-        if (!apc.enabled_now) return " · APC still off (enable rejected)";
-        return "";
-    }
-
-    // Render the structured /api/solaredge/test-toggle response as a one-liner.
-    //   1. Write OK, register reads the target → "Sent OFF (0 %) · register now 0 %".
-    //      If the panels keep producing despite this, Advanced Power Control
-    //      isn't committed on the inverter (writes land but aren't enforced).
-    //   2. Write failed (read-back mismatch / unreachable) → "Tried … write failed: …".
-    function formatSolarEdgeTestResult(data) {
-        const stateTxt = String(data.target_state || "").toUpperCase();
-        const target = data.target_pct;
-        const after = data.active_power_limit_pct_after;
-        const readbackTxt = data.readback_error
-            ? `readback failed: ${data.readback_error}`
-            : (after != null ? `register now ${after} %` : "register —");
-        // TEMPORARY: APC enable status — remove with the one-shot APC probe.
-        const apcTxt = formatApcSegment(data.advanced_power_control);
-        if (data.write_succeeded) {
-            // The write arms a short hold so the engine's self-healing
-            // reconciliation doesn't snap the register back before you can
-            // watch production respond.
-            const holdTxt = data.hold_seconds ? ` · holding ${data.hold_seconds}s` : "";
-            return `Sent ${stateTxt} (${target} %) · ${readbackTxt}${holdTxt}${apcTxt}`;
-        }
-        return `Tried ${stateTxt} (${target} %) · write failed: ${data.write_error || "unknown"} · ${readbackTxt}${apcTxt}`;
-    }
-
     async function init() {
         installDateAdapter();
         const canvas = document.getElementById("mainChart");
@@ -1185,7 +1112,6 @@
 
         wireChartNav();
         wireChargerModeControls();
-        wireSolarEdgeTestControl();
 
         const urls = buildChartUrls();
         let prices = [];

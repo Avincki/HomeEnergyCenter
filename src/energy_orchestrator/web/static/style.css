@@ -105,7 +105,6 @@ section h2 {
     letter-spacing: 0.05em;
 }
 
-.state-rule { color: var(--muted); margin-top: 0.5rem; font-family: monospace; }
 .state-reason { margin-top: 0.5rem; }
 .state-col-right strong { color: var(--text); }
 

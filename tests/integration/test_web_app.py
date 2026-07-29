@@ -509,7 +509,7 @@ async def test_dashboard_with_data(client: AsyncClient) -> None:
     resp = await client.get("/")
     assert resp.status_code == 200
     assert "72.0%" in resp.text
-    assert "positive_injection_price" in resp.text
+    assert "injection price 0.05 EUR/kWh &gt; 0" in resp.text
 
 
 async def test_debug_board_renders(client: AsyncClient) -> None:

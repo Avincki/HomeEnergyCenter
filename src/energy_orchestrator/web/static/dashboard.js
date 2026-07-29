@@ -715,14 +715,11 @@
         if (decision) {
             setHidden("state-empty-headline", true);
             setHidden("state-headline", false);
-            setHidden("state-rule", false);
             setText("state-text", String(decision.state || "").toUpperCase());
-            setText("state-rule", decision.rule_fired || "");
             setText("state-reason", decision.reason || "");
         } else {
             setHidden("state-empty-headline", false);
             setHidden("state-headline", true);
-            setHidden("state-rule", true);
             setText("state-reason",
                 "The orchestrator tick loop hasn't produced a decision — " +
                 "populate config.yaml and start the service.");

@@ -12,7 +12,6 @@
             SolarEdge: <strong id="state-text">{% if decision %}{{ decision.state | upper }}{% endif %}</strong>
             <span class="override-flag" id="state-override-flag" {% if not override.active %}hidden{% endif %}>override: <span id="state-override-mode">{{ override.mode }}</span></span>
         </div>
-        <div class="state-rule" id="state-rule" {% if not decision %}hidden{% endif %}>{% if decision %}{{ decision.rule_fired }}{% endif %}</div>
         <div class="state-reason" id="state-reason">{% if decision %}{{ decision.reason }}{% else %}The orchestrator tick loop hasn't produced a decision &mdash; populate config.yaml and start the service.{% endif %}</div>
         <div class="state-headline" id="state-empty-headline" {% if decision %}hidden{% endif %}>No decision recorded yet</div>
         <div class="state-reason se-limit" id="se-limit-line" hidden>
@@ -45,7 +44,6 @@
         <div class="state-headline">
             Tronity: <strong id="state-ev-soc">{% if reading and reading.ev_soc_pct is not none %}{{ "%.0f" | format(reading.ev_soc_pct) }}%{% else %}&mdash;{% endif %}</strong>
         </div>
-        <div class="state-reason">EQS state of charge</div>
         <div class="state-reason" id="state-ev-meta">&mdash;</div>
     </div>
 </section>

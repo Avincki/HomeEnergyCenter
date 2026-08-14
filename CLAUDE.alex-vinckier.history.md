@@ -2152,3 +2152,76 @@ Tronity has no cadence setting — it consumes what the OEM pushes.
 Committed and pushed to `origin/main`; Pi deploy = `git pull` there (+ the
 service restart one-shot in raspberry-pi-setup.md §9.1). Auto-memory
 `project_at_home_trace.md` updated with verdict + fix.
+
+---
+
+## 2026-08-14 — "No data, no Etrel control": expired TLS cert, and the renewal automated
+
+### Diagnosis
+
+Symptom reported: the dashboard still displays, but no data and no charger
+control. **The server was never broken.** Reached the Pi over the LAN
+(`192.168.129.47`, mDNS `HomeCenter.local`) because this PC's Tailscale was
+logged out, and everything was healthy: all 10 sources reporting successes
+seconds old, 33 `charger control decision` + 33 `solaredge decision` per
+hour, `etrel set_current_a written`, EQS charging at 4.4 kW.
+
+Root cause: the Tailscale cert expired **2026-08-12 12:38 UTC** (issued
+05-14, ~90-day life, no renewer — exactly the caveat recorded in the
+`infra_tailscale` memory back in May).
+
+The reason it didn't look like an SSL error is `sw.js`: the service worker
+falls back to the cached `/` shell when a navigation fetch fails, `/api/*`
+is never cached, and POSTs aren't intercepted at all. Expired cert →
+cached UI paints, no data arrives, control buttons dead. **Worth
+remembering as a symptom signature.**
+
+Cert was renewed and the unit restarted mid-session (service session start
+07:18 UTC); verified with a full chain validation — `curl --resolve` with
+no `-k` returns `ssl_verify=0`, cert now good to 2026-11-12.
+
+### Automation shipped (chose the systemd timer over Serve/Caddy)
+
+Options weighed: (a) timer, (b) `tailscale serve` — tailscaled owns and
+auto-renews the cert, but Serve only binds 443/8443/10000 so the `:8000`
+origin dies and the phone PWA needs re-adding, (c) Caddy — still needs the
+same cron. Picked (a): no URL change, no PWA reinstall, no app change.
+
+- `deploy/renew-tsnet-cert.sh` — re-runs `tailscale cert`, compares the new
+  cert byte-for-byte with the installed one, and **only** chowns + restarts
+  when it actually changed (Tailscale returns the cached cert until ~day 60,
+  so ~12 of 13 weekly runs are silent no-ops). Exercised locally against a
+  fake `tailscale`/`systemctl`: fresh install, unchanged, renewed, and
+  logged-out-failure paths all behave.
+- `deploy/tsnet-cert.{service,timer}` — weekly Sun 04:30, `Persistent=true`,
+  `After=tailscaled.service`. Script installs to `/usr/local/sbin` (root-owned
+  on purpose: the service account must not be able to rewrite what root runs).
+- **Early warning** so a stalled renewer can't go unnoticed: `_tls_to_dict()`
+  in `web/api.py` reads `EO_SSL_CERTFILE` and reports
+  `not_after`/`days_left`/`expired`/`needs_attention` on `/api/health` *and*
+  `/api/state`; inside 21 days health flips to `degraded` and the dashboard
+  shows an orange banner. Parse uses `ssl._ssl._test_decode_cert` —
+  `cryptography` isn't a dependency and `SSLContext.get_ca_certs()` returns
+  nothing for a leaf cert under OpenSSL 3 (tested that dead end first).
+  `_cert_not_after` is `lru_cache`d deliberately: uvicorn holds the cert from
+  startup, so the warning must persist until the unit restarts.
+- Docs: new §6.5.7 (install + verify), §6.5.2's stale "add a cron entry"
+  note replaced, and a §8 troubleshooting row for the blank-dashboard
+  signature.
+
+### Also noticed (not fixed)
+
+- **`sqlite3.OperationalError: database is locked`** ~6×/hour on the Pi, all
+  in `_record_status_success` (`orchestrator.py:1231`). Non-fatal — reads
+  and readings persist fine — but it's real lock contention.
+- **3 pre-existing test failures on `main`**: `test_tick_persists_reading_and_decision`,
+  `test_tick_skips_decision_when_sonnen_unreadable`,
+  `test_tick_records_price_fetch_error` — all "tick persisted nothing"
+  (`latest_reading is None`). Confirmed present on a clean stash of HEAD, so
+  not from this session's changes. Production ticks persist normally, so it
+  looks test-only. Unexplained.
+- Full suite with this session's work: **407 passed, 3 failed** (those three).
+
+### State at end-of-session
+
+Working tree only — not committed or pushed. `deploy/` is new.

@@ -1,0 +1,14 @@
+[Unit]
+Description=Weekly Tailscale TLS certificate renewal check for HomeEnergyCenter
+
+[Timer]
+# Weekly, early Sunday. Tailscale renews at roughly two-thirds of the ~90-day
+# lifetime, so a weekly check picks the new cert up around day 60 with ~30
+# days of slack — and the script no-ops (no restart) every other week.
+OnCalendar=Sun 04:30
+RandomizedDelaySec=1h
+# Run on the next boot if the Pi was off when the timer was due.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

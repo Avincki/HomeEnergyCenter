@@ -376,10 +376,12 @@ sudo chown homecenter:homecenter \
 sudo chmod 640 /opt/homecenter/HomeEnergyCenter/"$TAILNET_HOST".key
 ```
 
-These certs are valid for ~90 days. `tailscaled` renews them automatically the
-next time `tailscale cert` is invoked, which `caddy` (§6.5.5) does on its
-own. With the in-uvicorn setup below there's no automatic renewer, so add a
-cron entry every 60 days — or use caddy.
+These certs are valid for ~90 days. `tailscaled` only renews when something
+invokes `tailscale cert` again — nothing does that on its own, and uvicorn
+reads the cert once at startup, so the file has to be refreshed **and** the
+unit restarted. **Set up §6.5.7 now**, before you forget: when this cert
+expires the dashboard doesn't show an SSL error, it shows the cached PWA
+shell with no data and no controls, which looks like an application bug.
 
 #### 6.5.3 Point uvicorn at the cert — *exactly what to change in `main.py`*
 
@@ -560,6 +562,51 @@ Pi — a tiny detour, but it keeps cert validation strict and avoids fragile
 > registers and activates, and check `chrome://inspect/#service-workers`
 > from desktop Chrome — `sw.js` should show as *activated and running*. If
 > the page still loaded over plain HTTP the prompt will never appear.
+
+#### 6.5.7 Automate cert renewal (systemd timer)
+
+**Do this once.** Without it the cert expires ~90 days after §6.5.2 and the
+dashboard goes dark — see the failure mode in §8 ("loads but every value is
+blank"). It happened for real on 2026-08-12.
+
+`deploy/renew-tsnet-cert.sh` (in the repo) re-runs `tailscale cert`, and
+restarts the app **only if the certificate actually changed** — Tailscale
+hands back the cached cert until renewal is due (~day 60), so the weekly run
+is a no-op with zero downtime on every week but one. Copy it to a root-owned
+path: it runs as root, and leaving it in `/opt/homecenter/...` would let the
+service account rewrite a script root executes weekly.
+
+```bash
+cd /opt/homecenter/HomeEnergyCenter
+git pull
+sudo install -o root -g root -m 755 deploy/renew-tsnet-cert.sh /usr/local/sbin/
+sudo install -o root -g root -m 644 deploy/tsnet-cert.service deploy/tsnet-cert.timer \
+  /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tsnet-cert.timer
+```
+
+Verify — the first manual run should report "cert unchanged" (nothing to do)
+if §6.5.2 was recent:
+
+```bash
+sudo systemctl start tsnet-cert            # run it once by hand
+journalctl -u tsnet-cert -n 20 --no-pager  # expect "cert for <host> unchanged (expires ...)"
+systemctl list-timers tsnet-cert           # expect a NEXT date next Sunday
+```
+
+The defaults (app dir, cert owner, unit name) live at the top of the script
+and can be overridden with `TSNET_CERT_DIR` / `TSNET_CERT_OWNER` /
+`TSNET_CERT_UNIT` / `TSNET_HOST` — useful if a second service on the Pi ever
+needs the same cert.
+
+**Belt and braces:** `/api/health` and `/api/state` now carry a `tls` block
+(`not_after`, `days_left`, `expired`, `needs_attention`) read from
+`EO_SSL_CERTFILE`. Inside 21 days of expiry `/api/health` flips to
+`degraded` and the dashboard shows an orange banner — so a renewer that
+silently stopped working surfaces three weeks before it takes the site down.
+Because uvicorn holds the cert in memory, the banner keeps warning until the
+service is restarted, which is the step that's easy to forget.
 
 ### 6.6 Multiple apps behind one Caddy front door (future — not yet deployed)
 
@@ -835,6 +882,7 @@ text console.
 | Dashboard tile says a device is unreachable | Open `http://HomeCenter.local:8000/debug` — the health panel shows, per device, whether it's configured and reachable on its port. Fix the IP/token in `config.yaml`, then `sudo systemctl restart homeenergycenter`. |
 | Etrel cycles 6 A ↔ 0 (status bounces **Reserved ↔ Suspended (EV)**) and never sustains charging | The car is plugged but declining a real session: at startup the EV — or the Sonnen cluster channel on port 503 — clamps the *active* setpoint to ~0 just after we command a current (`setpoint_diverged=true` in the logs). The orchestrator auto kick-starts — it re-asserts the setpoint every poll (~5 s) for up to 3 min to nudge the session into latching (watch for `charger kick-start re-asserted` log lines); you can also repeatedly press the dashboard **Send N A** button. That our commanded `set_current_a` holds steady while the *active* `setpoint_a` cycles confirms it's device-side, not the control rule. If it still won't latch (`charger kick-start gave up …`), the EV is genuinely declining — check the car's **charge limit / scheduled-charging / departure timer** (Mercedes app) and the **Sonnen EV-charging mode**. |
 | Phone / iPad PWA shows an old version after a deploy, but live values keep updating | The service worker caches the app shell (HTML/CSS/JS); only `/api/*` bypasses the cache, so the tiles keep moving while the cached UI stays stale. First confirm the Pi is actually serving the new build — a GitHub push isn't a deploy (`git pull` + restart, §9.1); the Pi's own kiosk screen showing the new version confirms this. The `eo-shell-v3` worker is network-first, so once a device is on it new builds appear on the next load. A device still pinned to an older worker needs a one-time reset to drop the stale cache: on iOS, delete the Home Screen icon and re-add it (Safari → Share → **Add to Home Screen**), or Settings → Safari → Advanced → **Website Data** → swipe-delete the Pi's hostname → reopen. On desktop Chrome: DevTools → Application → Service Workers → **Unregister**, then hard-reload. |
+| Dashboard **loads but every value is blank and the buttons do nothing** — on the phone PWA, the kiosk, and desktop alike | **Expired TLS cert**, not an application bug — this is what §6.5.7 exists to prevent. The service worker serves the cached shell whenever a navigation fails and `/api/*` is never cached, so a browser refusing the cert looks exactly like "the app is up but dead". Confirm from any machine on the LAN: `curl -k https://192.168.129.47:8000/api/health` returns live JSON (server is fine), while `openssl s_client -connect 192.168.129.47:8000 -servername homecenter.<your-tailnet>.ts.net </dev/null 2>/dev/null \| openssl x509 -noout -dates` shows a `notAfter` in the past. Fix: `sudo systemctl start tsnet-cert` — it renews and restarts the app. Then find out why the timer didn't: `systemctl list-timers tsnet-cert` and `journalctl -u tsnet-cert`. Watch for the same thing on the *client* side — a PC whose own Tailscale is logged out can't resolve the tailnet name at all. |
 | Works on LAN but not over Tailscale | Confirm `web.host: 0.0.0.0` in `config.yaml` (not `127.0.0.1`). Check the Pi shows `connected` in `tailscale status` on your phone, and that the phone's Tailscale VPN toggle is on. If `ufw` is active, see §6.4. |
 | `tailscale up` won't authenticate | Make sure the install script finished (`apt install tailscale` step). Re-run `sudo tailscale up` and open the printed URL in a browser where you're logged into the right Tailscale account. |
 | Chromium opens but "connection refused" | The app isn't up yet. The `cage` unit waits for it; for the desktop autostart files, prefix the `chromium-browser` line with `sleep 5 &&` if it loses the race at boot. |

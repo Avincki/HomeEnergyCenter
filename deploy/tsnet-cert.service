@@ -1,0 +1,14 @@
+[Unit]
+Description=Renew the Tailscale TLS certificate for HomeEnergyCenter
+Documentation=file:/opt/homecenter/HomeEnergyCenter/docs/raspberry-pi-setup.md
+# tailscaled has to be up and logged in before `tailscale cert` can work.
+Requires=tailscaled.service
+After=tailscaled.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/renew-tsnet-cert.sh
+
+# Triggered by tsnet-cert.timer — no [Install] section on purpose, so
+# `systemctl enable` is something you do to the timer, not to this.

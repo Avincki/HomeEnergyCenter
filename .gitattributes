@@ -1,0 +1,7 @@
+# This repo is edited on Windows (core.autocrlf=true) and deployed to a
+# Raspberry Pi. Files the Pi *executes* or parses must stay LF-only: a CRLF
+# shebang gives "bad interpreter: /usr/bin/env bash^M", and systemd carries
+# the stray \r into Environment= values.
+*.sh          text eol=lf
+*.service     text eol=lf
+*.timer       text eol=lf

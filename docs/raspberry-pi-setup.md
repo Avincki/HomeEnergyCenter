@@ -576,12 +576,19 @@ is a no-op with zero downtime on every week but one. Copy it to a root-owned
 path: it runs as root, and leaving it in `/opt/homecenter/...` would let the
 service account rewrite a script root executes weekly.
 
+Run this as `alex`. Note the absolute paths: `/opt/homecenter` is the service
+account's home at mode `700`, so `alex` can't even `cd` into it (`cd:
+Permission denied`) — but `sudo` runs as root, which traverses it fine.
+
 ```bash
-cd /opt/homecenter/HomeEnergyCenter
-git pull
-sudo install -o root -g root -m 755 deploy/renew-tsnet-cert.sh /usr/local/sbin/
-sudo install -o root -g root -m 644 deploy/tsnet-cert.service deploy/tsnet-cert.timer \
-  /etc/systemd/system/
+# Pull as the account that owns the tree — not as alex.
+sudo -u homecenter bash -lc 'cd ~/HomeEnergyCenter && git pull --ff-only'
+
+sudo install -o root -g root -m 755 \
+  /opt/homecenter/HomeEnergyCenter/deploy/renew-tsnet-cert.sh /usr/local/sbin/
+sudo install -o root -g root -m 644 \
+  /opt/homecenter/HomeEnergyCenter/deploy/tsnet-cert.service \
+  /opt/homecenter/HomeEnergyCenter/deploy/tsnet-cert.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now tsnet-cert.timer
 ```
@@ -607,6 +614,14 @@ needs the same cert.
 silently stopped working surfaces three weeks before it takes the site down.
 Because uvicorn holds the cert in memory, the banner keeps warning until the
 service is restarted, which is the step that's easy to forget.
+
+The `tls` block only appears after the app itself is on this code, so the
+same deploy needs `sudo systemctl restart homeenergycenter` (§9.1). Check
+it from the Pi with:
+
+```bash
+curl -sk https://localhost:8000/api/health | python3 -m json.tool | head -20
+```
 
 ### 6.6 Multiple apps behind one Caddy front door (future — not yet deployed)
 

@@ -4,6 +4,7 @@ from collections.abc import AsyncIterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 
@@ -32,7 +33,32 @@ from energy_orchestrator.data import (
 )
 from energy_orchestrator.prices import PricePoint
 from energy_orchestrator.solar import SolarForecast, SolarPoint
+from energy_orchestrator.web import api
 from energy_orchestrator.web.app import create_app
+
+# Self-signed, `openssl req -x509 -days 3224`, expires 2035-06-12. Only its
+# validity dates matter — it's never served, just parsed.
+_SELF_SIGNED_PEM = """\
+-----BEGIN CERTIFICATE-----
+MIIDFTCCAf2gAwIBAgIUB1+grRil7ci+CAGB/67ZBTSsoKMwDQYJKoZIhvcNAQEL
+BQAwGjEYMBYGA1UEAwwPaG9tZWNlbnRlci50ZXN0MB4XDTI2MDgxNDA3MzI0MVoX
+DTM1MDYxMjA3MzI0MVowGjEYMBYGA1UEAwwPaG9tZWNlbnRlci50ZXN0MIIBIjAN
+BgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsB0YgH17NlAmKdatSHaLuhRvz70X
+T6g+Dosr5NUzjyTXgMXwBYRePSd9KGWMB6jCOU99UmmsjTO0mq50kUyLrufdncNb
+6v1Xp2WjudquQJtkjt8jUJRv6l7Sf2rDWYWDpuvqsFeP+Ku3ZleTaMnJ7s4ULw07
+6EoZCVY+XrZD906sVFMirWBZGCIWCbcTIJ/XtOj7jM3WCsQE4YbCWBlTIxLfpI4K
+9O38IkZ3B36GAa2+dSb9QfPUG1GLmiUm8Svfo5Zo+MKBLKgOvSTlyjKxh6ZBbdOM
+jZDxL2YEieePkMdnQbVQ/3F8uXFf2gq/1YJfmmFYuke1v5A86reIR2qN2QIDAQAB
+o1MwUTAdBgNVHQ4EFgQUiZTu6eHHgt9AyR92UMHRu/vlpKIwHwYDVR0jBBgwFoAU
+iZTu6eHHgt9AyR92UMHRu/vlpKIwDwYDVR0TAQH/BAUwAwEB/zANBgkqhkiG9w0B
+AQsFAAOCAQEAnFnvLC2QtK/fJdRS/ZrSJPRpgZFPl9KFr5Q7uPwHE4l53twKJ7su
+KRXhTSPIxjkxF+BCLU7CGAhsoYp1nPO3S5C0P5Abhgr7ctF84cEXB1qRfP9wemb4
+g7/Ky+VG+BZmwtodFm6zd7deOv4lcfAC8RDLLT+UM0G/guVRO70wManCRkfK+c/9
+GmVVEXbVoeRdOQJq42cnLDbb3b/QgbvygUfXHDP8XtdeNG/d2zXk/A16pBOEnQWs
+NUPwn7FQchYb6Fo3O8rfKPsizPSXsYAuoBPD2lfpEIUx5pvgMvzFglpVfRL58TnR
+bNbXYixKoc3Og43yFD02G4DvDlX+eAmSWA==
+-----END CERTIFICATE-----
+"""
 
 
 def _make_config(tmp_path: Path) -> AppConfig:
@@ -188,6 +214,87 @@ async def test_health_ok_when_recent_success(client: AsyncClient) -> None:
     body = resp.json()
     assert body["status"] == "ok"
     assert all(s["status"] == "OK" for s in body["sources"])
+
+
+# ----- API: TLS cert expiry ----------------------------------------------------
+
+
+async def test_health_omits_tls_when_serving_plain_http(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No EO_SSL_CERTFILE (dev box, or behind a proxy) — nothing to report."""
+    monkeypatch.delenv("EO_SSL_CERTFILE", raising=False)
+    body = (await client.get("/api/health")).json()
+    assert body["tls"] is None
+
+
+async def test_health_degrades_when_cert_expires_soon(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EO_SSL_CERTFILE", "/opt/homecenter/HomeEnergyCenter/host.crt")
+    monkeypatch.setattr(api, "_cert_not_after", lambda _p: datetime.now(UTC) + timedelta(days=5))
+
+    body = (await client.get("/api/health")).json()
+    assert body["tls"]["days_left"] == 5.0
+    assert body["tls"]["expired"] is False
+    assert body["tls"]["needs_attention"] is True
+    assert body["status"] == "degraded"
+
+
+async def test_health_quiet_while_cert_has_runway(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A cert renewed at ~day 60 of 90 leaves 30 days — that must not warn."""
+    monkeypatch.setenv("EO_SSL_CERTFILE", "/opt/homecenter/HomeEnergyCenter/host.crt")
+    monkeypatch.setattr(api, "_cert_not_after", lambda _p: datetime.now(UTC) + timedelta(days=30))
+
+    body = (await client.get("/api/health")).json()
+    assert body["tls"]["needs_attention"] is False
+
+
+async def test_health_flags_expired_and_unreadable_certs(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("EO_SSL_CERTFILE", "/opt/homecenter/HomeEnergyCenter/host.crt")
+
+    monkeypatch.setattr(api, "_cert_not_after", lambda _p: datetime.now(UTC) - timedelta(days=2))
+    body = (await client.get("/api/health")).json()
+    assert body["tls"]["expired"] is True
+    assert body["tls"]["needs_attention"] is True
+
+    # Unreadable/unparseable cert: report it rather than silently going quiet.
+    monkeypatch.setattr(api, "_cert_not_after", lambda _p: None)
+    body = (await client.get("/api/health")).json()
+    assert body["tls"]["not_after"] is None
+    assert body["tls"]["days_left"] is None
+    assert body["tls"]["needs_attention"] is True
+
+
+async def test_state_carries_tls_block_for_the_dashboard_banner(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The banner rides /api/state — the dashboard doesn't poll /api/health."""
+    monkeypatch.setenv("EO_SSL_CERTFILE", "/opt/homecenter/HomeEnergyCenter/host.crt")
+    monkeypatch.setattr(api, "_cert_not_after", lambda _p: datetime.now(UTC) + timedelta(days=3))
+
+    body = (await client.get("/api/state")).json()
+    assert body["tls"]["needs_attention"] is True
+    assert body["tls"]["cert_path"] == "/opt/homecenter/HomeEnergyCenter/host.crt"
+
+
+def test_cert_not_after_reads_a_real_pem(tmp_path: Path) -> None:
+    """Guard the private-API cert parse: it breaks silently if ssl changes."""
+    pem = tmp_path / "host.crt"
+    pem.write_text(_SELF_SIGNED_PEM)
+    not_after = api._cert_not_after(str(pem))
+    assert not_after is not None
+    assert not_after.tzinfo is not None
+    assert not_after.year == 2035
+
+    assert api._cert_not_after(str(tmp_path / "missing.crt")) is None
+    garbage = tmp_path / "garbage.crt"
+    garbage.write_text("not a certificate")
+    assert api._cert_not_after(str(garbage)) is None
 
 
 async def test_config_prefills_geofence_with_default_location(client: AsyncClient) -> None:

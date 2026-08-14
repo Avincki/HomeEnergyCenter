@@ -684,6 +684,34 @@
         metaEl.textContent = parts.length ? parts.join(" · ") : "—";
     }
 
+    // Tailscale's .ts.net cert lasts ~90 days; deploy/tsnet-cert.timer renews
+    // it. When that stops working the first symptom is brutal — every browser
+    // refuses the connection and the PWA shows its cached shell with no data,
+    // which reads as "the app is broken", not "the cert expired". So warn here
+    // while the dashboard still loads. The server decides what's too close to
+    // expiry (tls.needs_attention); this only renders it.
+    function applyCertWarning(tls) {
+        const el = document.getElementById("cert-warning");
+        if (!el) return;
+        if (!tls || !tls.needs_attention) {
+            setHidden("cert-warning", true);
+            return;
+        }
+        const days = tls.days_left;
+        if (days == null) {
+            el.textContent = "TLS certificate unreadable (" + tls.cert_path
+                + ") — check the renewal: journalctl -u tsnet-cert";
+        } else if (days <= 0) {
+            el.textContent = "TLS certificate EXPIRED — renew now: "
+                + "sudo systemctl start tsnet-cert";
+        } else {
+            el.textContent = "TLS certificate expires in " + Math.floor(days)
+                + " days — the weekly renewal should have rolled it by now: "
+                + "journalctl -u tsnet-cert";
+        }
+        setHidden("cert-warning", false);
+    }
+
     function applyState(state) {
         const reading = state.reading || {};
         const decision = state.decision;
@@ -704,6 +732,7 @@
         applyChargerControlDecision(state);
         applySolarTile(reading.small_solar_w, reading.large_solar_w);
         setText("tile-grid", fmtInt(neg(reading.grid_feed_in_w), " W"));
+        applyCertWarning(state.tls);
 
         const card = document.getElementById("state-card");
         if (card) {

@@ -6,6 +6,8 @@
 {% endblock %}
 {% block content %}
 
+<p class="cert-warning" id="cert-warning" hidden></p>
+
 <section id="state-card" class="state-card {% if decision and decision.state == 'on' %}state-on{% elif decision and decision.state == 'off' %}state-off{% else %}state-unknown{% endif %}">
     <div class="state-col state-col-left">
         <div class="state-headline" id="state-headline" {% if not decision %}hidden{% endif %}>

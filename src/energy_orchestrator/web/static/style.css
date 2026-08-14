@@ -196,6 +196,18 @@ section h2 {
 .se-limit-warn { background: var(--warn); color: #000; }
 .se-limit-muted { background: var(--off); color: #000; }
 
+/* TLS cert about to expire — rare, and loud when it happens, because the
+   failure it precedes takes the whole dashboard down for every browser. */
+.cert-warning {
+    background: var(--warn);
+    color: #000;
+    font-size: 0.85rem;
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 6px;
+    margin: 0 0 1rem;
+}
+
 /* Ring the charger-mode button (Force / Optimized) that is currently active. */
 .etrel-set-form button.is-active {
     outline: 2px solid var(--text);

@@ -4,7 +4,7 @@ Endpoints (all under ``/api``):
   GET  /state                 latest reading + decision + sources
   GET  /history?h=24          readings + decisions, last N hours
   GET  /sources               last success/error per source
-  GET  /health                config + per-source health snapshot
+  GET  /health                config + per-source health + TLS cert expiry
   GET  /prices                today + tomorrow's day-ahead prices from the in-memory cache
   POST /override              { mode, minutes? } — apply or clear override
   POST /solaredge/test-toggle flip the inverter limit 0%/100% (manual hardware probe)
@@ -14,7 +14,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
+import os
+import ssl
 import subprocess
 import sys
 from collections.abc import AsyncIterator, Sequence
@@ -70,6 +73,11 @@ router = APIRouter(prefix="/api")
 # How recently a successful read counts as "OK" before it degrades to STALE.
 _OK_THRESHOLD = timedelta(minutes=5)
 _DEGRADED_THRESHOLD = timedelta(minutes=30)
+
+# How long before the TLS cert expires we start shouting about it. Tailscale
+# renews at ~day 60 of the ~90-day life and deploy/tsnet-cert.timer checks
+# weekly, so anything under three weeks means the renewer stopped working.
+_TLS_WARN_DAYS = 21.0
 
 # Strong references to fire-and-forget background tasks. asyncio keeps only a
 # weak reference to a bare ``create_task`` result, so without this the task can
@@ -264,6 +272,62 @@ def _override_to_dict(controller: OverrideController) -> dict[str, Any]:
     }
 
 
+@functools.lru_cache(maxsize=4)
+def _cert_not_after(cert_path: str) -> datetime | None:
+    """Expiry of a PEM certificate, or ``None`` if it can't be read/parsed.
+
+    Cached for the process lifetime on purpose: uvicorn loads the cert once at
+    startup, so what browsers actually get only changes on restart. A renewal
+    that swaps the file underneath a running process must keep warning until
+    the unit is restarted — forgetting that restart is precisely how you end
+    up serving an expired cert with a valid one sitting on disk.
+
+    ``ssl._ssl._test_decode_cert`` is private, but the stdlib offers no public
+    "read a PEM's dates" call (``SSLContext.get_ca_certs`` returns nothing for
+    a leaf cert under OpenSSL 3) and ``cryptography`` isn't a dependency.
+    """
+    try:
+        decoded = ssl._ssl._test_decode_cert(cert_path)  # type: ignore[attr-defined]
+        return datetime.fromtimestamp(ssl.cert_time_to_seconds(decoded["notAfter"]), UTC)
+    except (OSError, ValueError, KeyError, ssl.SSLError):
+        return None
+
+
+def _tls_to_dict() -> dict[str, Any] | None:
+    """Expiry of the TLS cert uvicorn is serving, or ``None`` on plain HTTP.
+
+    The path is the same ``EO_SSL_CERTFILE`` the systemd unit hands uvicorn in
+    ``main.py``; a dev box without TLS has nothing to report. Tailscale's
+    ``.ts.net`` certs last ~90 days and only roll when something invokes
+    ``tailscale cert`` (``deploy/renew-tsnet-cert.sh``), so surfacing
+    ``days_left`` is what turns a stalled renewer into a visible warning
+    instead of a dashboard that goes dark without explanation.
+    """
+    cert_path = os.environ.get("EO_SSL_CERTFILE") or None
+    if cert_path is None:
+        return None
+    not_after = _cert_not_after(cert_path)
+    if not_after is None:
+        # TLS is on but the cert is unreadable — worth reporting, not hiding.
+        return {
+            "cert_path": cert_path,
+            "not_after": None,
+            "days_left": None,
+            "expired": None,
+            "needs_attention": True,
+        }
+    days_left = (not_after - datetime.now(UTC)).total_seconds() / 86400.0
+    return {
+        "cert_path": cert_path,
+        "not_after": _iso_utc(not_after),
+        "days_left": round(days_left, 1),
+        "expired": days_left <= 0.0,
+        # Decided here, not in the dashboard, so the API and the banner can't
+        # drift apart on what counts as "too close to expiry".
+        "needs_attention": days_left <= _TLS_WARN_DAYS,
+    }
+
+
 def _classify_source_status(s: SourceStatus, now: datetime) -> str:
     """Return one of: OK / DEGRADED / ERROR / UNKNOWN.
 
@@ -319,6 +383,7 @@ async def get_state(
         "sources": [_source_to_dict(s) for s in sources],
         "charger": charger,
         "vehicle": _vehicle_to_dict(vehicle_cache.record(), config, datetime.now(UTC)),
+        "tls": _tls_to_dict(),
     }
 
 
@@ -399,11 +464,16 @@ async def get_health(config: ConfigDep, uow: UowDep) -> dict[str, Any]:
             }
         )
 
+    tls = _tls_to_dict()
+    if tls is not None and tls["needs_attention"]:
+        overall_ok = False
+
     return {
         "status": "ok" if overall_ok else "degraded",
         "config_loaded": True,
         "dry_run": config.decision.dry_run,
         "sources": sources_health,
+        "tls": tls,
     }
 
 
